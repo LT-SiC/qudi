@@ -84,6 +84,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
     enable_A2 = StatusVar('enable_A2', True)
     enable_Repump = StatusVar('enable_Repump', False)
     enable_PulsedRepump = StatusVar('enable_PulsedRepump', True)
+    enable_Green = StatusVar('enable_Green', False)
+    enable_PulsedGreen = StatusVar('enable_PulsedGreen', False)
     RepumpWhenIonized = StatusVar('RepumpWhenIonized', False)
     MW1_Freq = StatusVar('MW1_freq', 70)
     MW2_Freq = StatusVar('MW2_freq', 140)
@@ -432,6 +434,11 @@ class LaserScannerLogic(GenericLogic, ple_default):
             QtTest.QTest.qSleep(200)
             self.setup_repump()
             self._awg.mcas_dict['ple_repump'].run()
+        if self.enable_PulsedGreen:
+            self._awg.mcas_dict.stop_awgs()
+            QtTest.QTest.qSleep(200)
+            self.setup_green()
+            self._awg.mcas_dict['ple_green'].run()
         self.current_position = self._scanning_device.get_scanner_position() #Never used
 
         if v_min is not None:
@@ -654,6 +661,11 @@ class LaserScannerLogic(GenericLogic, ple_default):
                 QtTest.QTest.qSleep(200)
                 self.setup_repump()
                 self._awg.mcas_dict['ple_repump'].run()
+            if (self.enable_PulsedGreen):
+                self._awg.mcas_dict.stop_awgs()
+                QtTest.QTest.qSleep(200)
+                self.setup_green()
+                self._awg.mcas_dict['ple_green'].run()
             counts = self._scan_line(self._downwards_ramp)
             self.upwards_scan = True
             self.start_stop_timestamps=[]
@@ -676,6 +688,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
     def trace_seq(self):
         self.setup_repump()
+        self.setup_green()
         hash = base64.b64encode(hashlib.sha1(self.convert_seq_params_to_string().encode()).digest())
         #Added self.queue._gated_counter.readout_duration such that the hash recognizes a change in readout duration and will update n_values in the sequence accordingly
         self.curr_sequence_name = "ple_trace_hash_{}".format(hash)
@@ -717,6 +730,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
                     A1=self.enable_A1,
                     A2=self.enable_A2,
                     repump=self.enable_Repump,
+                    CTL=self.enable_Green,
                     length_mus=10
                     )
         else:
@@ -725,6 +739,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
                     A2=self.enable_A2,
                     gateMW=True,
                     repump=self.enable_Repump,
+                    CTL=self.enable_Green,
                     length_mus=10
                     )
         
@@ -748,6 +763,20 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self._awg.mcas_dict.stop_awgs()
         QtTest.QTest.qSleep(200)
         self._awg.mcas_dict['ple_repump'] = seq
+
+    def setup_green(self):
+        self.adv_mode = 'SING'
+        seq = self._awg.mcas(name='ple_green', ch_dict={"2g": [1, 2], "ps": [1]}, advance_mode=self.adv_mode)
+
+        seq.start_new_segment("Green", loop_count = 1, advance_mode=self.adv_mode)
+        seq.asc(repump=self.enable_PulsedGreen, length_mus=self.GreenDuration)
+        
+        # seq.start_new_segment("RepumpDec", advance_mode=self.adv_mode)
+        # seq.asc(length_mus=self.RepumpDecay)
+        
+        self._awg.mcas_dict.stop_awgs()
+        QtTest.QTest.qSleep(200)
+        self._awg.mcas_dict['ple_green'] = seq
         
     def power_to_amp(self, power_dBm, impedance=50):
         power_dBm = np.atleast_1d(power_dBm)
@@ -1210,7 +1239,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
         return self.interpolated_x_data,self.fit_data,result
     
     def convert_seq_params_to_string(self):
-        return str(self.MW1_Power)+str(self.MW2_Power)+str(self.MW3_Power)+str(self.MW1_Freq)+str(self.MW2_Freq)+str(self.MW3_Freq)+str(self.enable_MW1)+str(self.enable_MW2)+str(self.enable_MW3)+str(self.enable_A1)+str(self.enable_A2)+str(self.enable_Repump)+str(self.enable_PulsedRepump)+str(self.lock_laser)+str(self.RepumpDuration)+str(self.RepumpDecay)
+        return str(self.MW1_Power)+str(self.MW2_Power)+str(self.MW3_Power)+str(self.MW1_Freq)+str(self.MW2_Freq)+str(self.MW3_Freq)+str(self.enable_MW1)+str(self.enable_MW2)+str(self.enable_MW3)+str(self.enable_A1)+str(self.enable_A2)+str(self.enable_Repump)+str(self.enable_PulsedRepump)+str(self.enable_Green)+str(self.enable_PulsedGreen)+str(self.lock_laser)+str(self.RepumpDuration)+str(self.RepumpDecay)+str(self.GreenDuration)+str(self.GreenDecay)
     
 
     ### From here:

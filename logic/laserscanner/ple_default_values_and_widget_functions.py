@@ -6,6 +6,8 @@ class ple_default_values_and_widget_functions:
         _lock_laser:bool=False
         RepumpDuration:float = 10
         RepumpDecay:float = 1000
+        GreenDuration:float = 10
+        GreenDecay:float = 1000
 
         
         stoptime:float = 0
@@ -28,6 +30,9 @@ class ple_default_values_and_widget_functions:
 
         def ple_PulsedRepump_CheckBox_StateChanged(self,value):
                 self.enable_PulsedRepump=value==2
+
+        def ple_PulsedGreen_CheckBox_StateChanged(self,value):
+                self.enable_PulsedGreen=value==2
 
         def ple_RepumpWhenIonized_CheckBox_StateChanged(self,value):
                 self.RepumpWhenIonized=value==2
@@ -59,6 +64,12 @@ class ple_default_values_and_widget_functions:
         def ple_RepumpDuration_LineEdit_textEdited(self,text):
                 try:
                         self.RepumpDuration=float(text.replace(",","."))
+                except:
+                        pass
+
+        def ple_GreenDuration_LineEdit_textEdited(self,text):
+                try:
+                        self.GreenDuration=float(text.replace(",","."))
                 except:
                         pass
         
@@ -124,6 +135,9 @@ class ple_default_values_and_widget_functions:
 
         def ple_CWrepump_CheckBox_StateChanged(self,value):
                 self.enable_Repump=value==2
+
+        def ple_CWGreen_CheckBox_StateChanged(self,value):
+                self.enable_Green=value==2
 
         def ple_PerformFit_CheckBox_StateChanged(self,value):
                 self.PerformFit=value==2
