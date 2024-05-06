@@ -38,6 +38,8 @@ from PyQt5 import QtTest
 
 from gui.laserscanner.connectors_and_set_default import initialize_connections_and_defaultvalue as ple_default_functions
 
+from logic.laserscanner.laser_scanner_logic import LaserScannerLogic
+
 
 class VoltScanMainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -81,14 +83,14 @@ class VoltScanGui(GUIBase, ple_default_functions):
     def on_activate(self):
 
         self._mw = VoltScanMainWindow()
-        self._voltscan_logic = self.voltagescannerlogic1()
+        self._voltscan_logic: LaserScannerLogic = self.voltagescannerlogic1()
         self.initialize_connections_and_defaultvalues()
 
         #self._voltscan_logic.SigClock.connect(self.Update_Runtime, QtCore.Qt.QueuedConnection)
   
         # Get the image from the logic
         self.scan_matrix_image = pg.ImageItem(
-            self._voltscan_logic.scan_matrix,
+            self._voltscan_logic.plot_matrix,
             axisOrder='row-major')
 
         self.scan_matrix_image.setRect(
@@ -263,7 +265,7 @@ class VoltScanGui(GUIBase, ple_default_functions):
 
     def refresh_matrix(self):
         """ Refresh the xy-matrix image """
-        self.scan_matrix_image.setImage(self._voltscan_logic.scan_matrix, axisOrder='row-major')
+        self.scan_matrix_image.setImage(self._voltscan_logic.plot_matrix, axisOrder='row-major')
         self.scan_matrix_image.setRect(
             QtCore.QRectF(
                 self._voltscan_logic.scan_range[0],
@@ -273,7 +275,7 @@ class VoltScanGui(GUIBase, ple_default_functions):
             )
         self.refresh_scan_colorbar()
 
-        scan_image_data = self._voltscan_logic.scan_matrix
+        scan_image_data = self._voltscan_logic.plot_matrix
 
         # If "Centiles" is checked, adjust colour scaling automatically to centiles.
         # Otherwise, take user-defined values.

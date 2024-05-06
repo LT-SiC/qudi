@@ -370,7 +370,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
     def _initialise_data_matrix(self, scan_length):
         """ Initializing the matrix plot. """
 
-        self.scan_matrix = np.zeros((self.number_of_lines, scan_length))
+        self.scan_matrix = np.zeros((self.number_of_repeats, scan_length))
+        self.plot_matrix = np.zeros((self.number_of_lines, scan_length))
         self.plot_x = np.linspace(self.scan_range[0], self.scan_range[1], scan_length)
         self.plot_x_frequency=self.plot_x*self._scanning_device._scanner_position_ranges[3][1] #1000 MHz equals 0.22 V on the PLE x range with FeedForward on # 1000 MHz equals 0.30 V on the PLE x range without FeedForward
         self.plot_y = np.zeros(scan_length)
@@ -456,12 +457,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.set_resolution(self.stepsize)
         
         self._upwards_ramp = self._generate_ramp(v_min, v_max, self._scan_speed)
-<<<<<<< HEAD
         self._downwards_ramp = self._generate_ramp(v_max, v_min, 0.75)
-=======
-        self._downwards_ramp = self._generate_ramp(v_max, v_min, self._scan_speed)
-        #print("passed time 3", time.time()-self.currenttime)
->>>>>>> upstream/Erik_setup_2
         
         self.local_counts = []
         self.timestamp_list=[]
@@ -537,6 +533,9 @@ class LaserScannerLogic(GenericLogic, ple_default):
             self.local_counts=[]
             
             self.measured_frequencies=self._wavemeterlogic._hardware_pull._parentclass._wavelength_data.copy()
+            # only emits here if no laser locking is on
+            time.sleep(0.1)
+            # if not self.lock_laser or (self.lock_laser and self.laser_at_position):
             print("PLE, sigScanFinished emit")
             self.sigScanFinished.emit()
             return
@@ -555,17 +554,10 @@ class LaserScannerLogic(GenericLogic, ple_default):
                 self.setup_seq(sequence_name=self.curr_sequence_name)
             self._awg.mcas_dict[self.curr_sequence_name].run()
             
-<<<<<<< HEAD
             fstart=self._wavemeterlogic._wavemeter_device.get_current_wavelength(kind ='air', ch = self._wavemeterlogic._wavemeter_device.channel1)
             self.start_list.append(time.time()-self._acqusition_start_time)
             counts = self._scan_line(self._upwards_ramp)
             fend=self._wavemeterlogic._wavemeter_device.get_current_wavelength(kind ='air', ch = self._wavemeterlogic._wavemeter_device.channel1)
-=======
-            fstart=self._wavemeterlogic._wavemeter_device.get_current_wavelength2()
-            self.start_list.append(time.time()-self._wavemeterlogic._acqusition_start_time)
-            counts = self._scan_line(self._upwards_ramp_slices[self.slice_number])
-            fend=self._wavemeterlogic._wavemeter_device.get_current_wavelength2()
->>>>>>> upstream/Erik_setup_2
             self.f_start_end.append([fstart,fend,len(counts)])
 
             #get the timestamp from the wavemeter
@@ -587,7 +579,6 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
                 freqs=np.concatenate([np.interp(Ts,xp=times,fp=wavelengths) for Ts in self.timestamp_list])
 
-<<<<<<< HEAD
             cts=self.local_counts
             self.stop_list.append(time.time()-self._acqusition_start_time)
             #TODO get the real fmin,fmax,points
@@ -597,15 +588,6 @@ class LaserScannerLogic(GenericLogic, ple_default):
                 self.range_defined=True
 
             self.f_range=np.linspace(self.fmin,self.fmax,len(self.local_counts)) #this will be the x axis for all the scans #do not calculate it here, t least not fmin and fmax
-=======
-                cts=self.local_counts
-                self.stop_list.append(time.time()-self._wavemeterlogic._acqusition_start_time)
-                #TODO get the real fmin,fmax,points
-                if not self.range_defined:
-                    self.fmin=min(freqs)
-                    self.fmax=max(freqs)
-                    self.range_defined=True
->>>>>>> upstream/Erik_setup_2
 
             self.xy_data.append([freqs,cts])
 
@@ -631,13 +613,23 @@ class LaserScannerLogic(GenericLogic, ple_default):
             self.f_start_end=[]
 
             #old code
-            if self.scan_matrix.shape[0]< self.number_of_lines:
-                add=np.zeros((int(self.number_of_lines-self.scan_matrix.shape[0]),self.scan_matrix.shape[1]))
+            if self.scan_matrix.shape[0]< self.number_of_repeats:
+                add=np.zeros((int(self.number_of_repeats-self.scan_matrix.shape[0]),self.scan_matrix.shape[1]))
                 self.scan_matrix=np.vstack((self.scan_matrix,add))
-            elif self.scan_matrix.shape[0]> self.number_of_lines and self.number_of_lines!=0:
-                self.scan_matrix=self.scan_matrix[:int(self.number_of_lines)]
+            elif self.scan_matrix.shape[0]> self.number_of_repeats and self.number_of_repeats!=0:
+                # self.scan_matrix=self.scan_matrix[:int(self.number_of_lines)]
+                pass
+            if self.plot_matrix.shape[0]< self.number_of_lines:
+                add=np.zeros((int(self.number_of_lines-self.plot_matrix.shape[0]),self.plot_matrix.shape[1]))
+                self.plot_matrix=np.vstack((self.plot_matrix,add))
+            elif self.plot_matrix.shape[0]> self.number_of_lines and self.number_of_lines!=0:
+                self.plot_matrix=self.plot_matrix[:int(self.number_of_lines)]
+
+            # adds new values to the beginning and shifts others 1 behind
             self.scan_matrix[1:]=self.scan_matrix[0:-1]
             self.scan_matrix[0]=self.local_counts
+            self.plot_matrix[1:]=self.plot_matrix[0:-1]
+            self.plot_matrix[0]=self.local_counts
         
             
             #self.scan_matrix[self._scan_counter_up] =self.local_counts # Here occurs an error "cannot copy sequence with size 21 to array axis with dimension 20". This only occured, when variables where changed while the programm is running.
@@ -929,6 +921,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
                     #self.scan_range[0],self.scan_range[1]=peak_volt-0.5*range,peak_volt+0.5*range
                 self.sigScanRangeChanged.emit(self.scan_range[0],self.scan_range[1])
                 self.laser_at_position = True
+
+              
             else: 
                 print("No PLE found in range. Retry with bigger scan range...")
                 self.scan_range[0],self.scan_range[1]=self.scan_range[0]-1,self.scan_range[1]+1
@@ -952,6 +946,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
         filepath  = self._save_logic.get_path_for_module(module_name='LaserScanning')
         filepath2 = self._save_logic.get_path_for_module(module_name='LaserScanning')
+        filepath22 = self._save_logic.get_path_for_module(module_name='LaserScanning')
         filepath3 = self._save_logic.get_path_for_module(module_name='LaserScanning')
         filepath4 = self._save_logic.get_path_for_module(module_name='LaserScanning')
         timestamp = datetime.datetime.now()
@@ -959,11 +954,13 @@ class LaserScannerLogic(GenericLogic, ple_default):
         if len(tag) > 0:
             filelabel  = tag + '_PLE_data'
             filelabel2 = tag + '_PLE_data_raw_trace'
+            filelabel22 = tag + '_PLE_data_plot_trace'
             filelabel3 = tag + '_PLE_data_raw freqs vs cts'
             filelabel4 = tag + '_PLE_data_raw freqs'
         else:
             filelabel  = 'PLE_data'
             filelabel2 = 'PLE_data_raw_trace'
+            filelabel22 = 'PLE_data_plot_trace'
             filelabel3 = 'PLE_data_raw freqs vs cts'
             filelabel4 = 'PLE_data_raw freqs'
         
@@ -975,6 +972,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
         data2 = OrderedDict()
         data2['count data (counts/s)'] = self.scan_matrix[:self._scan_counter_up, :]
+        data22 = OrderedDict()
+        data22['count data (counts/s)'] = self.plot_matrix[:self._scan_counter_up, :]
 
         data3 =OrderedDict()
         data3["freqs vs cts per scan"]= self.xy_data
@@ -1000,7 +999,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
 
         fig = self.draw_figure(
-            self.scan_matrix,
+            self.plot_matrix,
             self.plot_x,
             self.plot_y,
             self.interpolated_x_data,
@@ -1027,6 +1026,16 @@ class LaserScannerLogic(GenericLogic, ple_default):
             delimiter='\t',
             timestamp=timestamp,
             plotfig=fig
+        )
+
+        self._save_logic.save_data(
+            data22,
+            filepath=filepath22,
+            parameters=parameters,
+            filelabel=filelabel22,
+            fmt='%.6e',
+            delimiter='\t',
+            timestamp=timestamp
         )
 
         # self._save_logic.save_data(
@@ -1109,14 +1118,15 @@ class LaserScannerLogic(GenericLogic, ple_default):
         # Create figure
         fig, (ax_mean, ax_matrix) = plt.subplots(nrows=2, ncols=1)
 
-        ax_mean.plot(freq_data, count_data, linestyle=':', linewidth=0.5)
+        ax_mean.plot(freq_data*self._scanning_device._scanner_position_ranges[3][1], count_data, linestyle=':', linewidth=0.5)
 
         # Do not include fit curve if there is no fit calculated.
         if max(fit_count_vals) > 0:
             ax_mean.plot(fit_freq_vals, fit_count_vals, marker='None')
 
         ax_mean.set_ylabel('Fluorescence (' + counts_prefix + 'c/s)')
-        ax_mean.set_xlim(np.min(freq_data), np.max(freq_data))
+        ax_mean.set_xlabel('Detuning (' + mw_prefix + 'GHz)')
+        ax_mean.set_xlim(np.min(freq_data*self._scanning_device._scanner_position_ranges[3][1]), np.max(freq_data*self._scanning_device._scanner_position_ranges[3][1]))
 
         matrixplot = ax_matrix.imshow(
             matrix_data,
@@ -1133,11 +1143,11 @@ class LaserScannerLogic(GenericLogic, ple_default):
             aspect='auto',
             interpolation='nearest')
 
-        ax_matrix.set_xlabel('Frequency (' + mw_prefix + 'Hz)')
+        ax_matrix.set_xlabel('Scan voltage (V)')
         ax_matrix.set_ylabel('Scan #')
 
-        # Adjust subplots to make room for colorbar
-        fig.subplots_adjust(right=0.8)
+        # Adjust subplots to make room for colorbar & upper xlabel
+        fig.subplots_adjust(right=0.8,hspace=0.3)
 
         # Add colorbar axis to figure
         cbar_ax = fig.add_axes([0.85, 0.15, 0.02, 0.7])
