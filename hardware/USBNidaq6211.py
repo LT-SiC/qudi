@@ -35,7 +35,6 @@ class streamUSBnidaq(Base, StreamUSBNidaqInterface): #Hardware file
         print("Init USB Nidaq...")
         self.sampling_freq_in = int(self._sampling_freq_in)  # in Hz
         self.buffer_in_size = int(self._buffer_in_size)
-        print("DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",self.buffer_in_size,self.sampling_freq_in,int(self.buffer_in_size),int(self.sampling_freq_in))
         
         self.bufsize_callback = self.buffer_in_size
         self.buffer_in_size_cfg = round(self.buffer_in_size * 1)  # clock configuration

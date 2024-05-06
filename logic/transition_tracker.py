@@ -903,7 +903,9 @@ class TransitionTracker(GenericLogic):
     def load_rabi_parameters(self):
         self.rabi_parameters = dict()
         for f in os.listdir(self.log_folder):
+            print(f)
             if 'e_rabi_ou{:.0f}deg'.format(1000*self._awg.mcas_dict.awgs['2g'].ch[1].output_amplitude) in f:
+                print("passed",self._awg.mcas_dict.awgs['2g'].ch[1].output_amplitude)
                 if len(f.split('.')) > 2:
                     raise Exception('Error: floating point values or any other reason to have points in the filename other than for the file extension may not a good idea. {}'.format(f))
                 self.rabi_parameters[f.split('.')[0]] = RabiParametersStatic(filepath=os.path.join(self.log_folder, f), transition_name='e_rabi')
