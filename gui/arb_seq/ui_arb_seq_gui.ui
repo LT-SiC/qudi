@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1104</width>
+    <width>1137</width>
     <height>844</height>
    </rect>
   </property>
@@ -708,12 +708,7 @@
        <widget class="QComboBox" name="arbseq_SelectFit_ComboBox">
         <item>
          <property name="text">
-          <string>Cosinus</string>
-         </property>
-        </item>
-        <item>
-         <property name="text">
-          <string>Cosinus+Phase</string>
+          <string>Exponential</string>
          </property>
         </item>
        </widget>
@@ -818,7 +813,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>1104</width>
+     <width>1137</width>
      <height>21</height>
     </rect>
    </property>

@@ -669,11 +669,11 @@ class TransitionTracker(GenericLogic):
     def update_ple(self,freqs=""):
         print("Updating PLE freq in TT...")
         if len(freqs.split(';')) == 3: # when PLE data has two peaks
-            self.ple_A2 = float(freqs.split(';')[1])
-            self.ple_A1 = float(freqs.split(';')[0])
+            self.ple_A2 = float(freqs.replace("V","").split(';')[1])
+            self.ple_A1 = float(freqs.replace("V","").split(';')[0])
         elif len(freqs.split(';')) < 3: # If only one peak is fitted to PLE data
             #self.ple_A1 = float(freqs.split(';')[0])
-            self.ple_A2 = float(freqs.split(';')[0])
+            self.ple_A2 = float(freqs.replace("V","").split(';')[0])
         else:
             print("Too many PLE peaks, dont know how to assign it in Transition Tracker.")
         # to set the constant voltage, thus lock the frequency, on the peak

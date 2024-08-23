@@ -6,6 +6,7 @@ import numpy as np
 from core.statusvariable import StatusVar
 
 from interface.cobolt_interface import CoboltInterface
+from hardware.laser.cobolt_laser import HubnerCobolt
 
 class CoboltLogic(GenericLogic,CoboltInterface):
     
@@ -18,16 +19,18 @@ class CoboltLogic(GenericLogic,CoboltInterface):
     HubnerCobolt = Connector(interface='HubnerCobolt')
 
     def on_activate(self):
-        self._cobolt = self.HubnerCobolt()
-        self._cobolt.on_activate()
+        self._cobolt: HubnerCobolt = self.HubnerCobolt()
+        
+        # self._cobolt.on_activate()
 
     def on_deactivate(self):
-        self._cobolt.on_deactivate()
+        pass
+        # self._cobolt.on_deactivate()
 
     def power(self,val: float=None):
         if val:
             """Set the modulation power in mW"""
-            self._cobolt.set_modulation_power(val)
+            self._cobolt.modulation_mode(val)
         else:
             """Get the modulation power setpoint in mW"""
             return self._cobolt.get_modulation_power()

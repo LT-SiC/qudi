@@ -138,18 +138,18 @@ class ArbSeqGUI(GUIBase,arb_seq_default_functions):
         # Add the display item to the xy and xz ViewWidget, which was defined in the UI file.
         self._mw.arbseq_data_PlotWidget.addItem(self.arbseq_data_image)
         self._mw.arbseq_data_PlotWidget.addItem(self.arbseq_data_image_fit)
-        self._mw.arbseq_data_PlotWidget.setLabel(axis='left', text='Counts', units='Counts')
-        self._mw.arbseq_data_PlotWidget.setLabel(axis='bottom', text='Tau', units='s')
+        self._mw.arbseq_data_PlotWidget.setLabel(axis='left', text='', units='')
+        self._mw.arbseq_data_PlotWidget.setLabel(axis='bottom', text='Laser pulse durations', units='ms')
         self._mw.arbseq_data_PlotWidget.showGrid(x=True, y=True, alpha=0.8)
 
         self._mw.arbseq_detect_PlotWidget.addItem(self.arbseq_detect_image)
-        self._mw.arbseq_detect_PlotWidget.setLabel(axis='left', text='Counts', units='Counts')
-        self._mw.arbseq_detect_PlotWidget.setLabel(axis='bottom', text='Time', units='s')
+        self._mw.arbseq_detect_PlotWidget.setLabel(axis='left', text='Fluorescence', units='Counts')
+        self._mw.arbseq_detect_PlotWidget.setLabel(axis='bottom', text='Sequence duration', units='s')
         self._mw.arbseq_detect_PlotWidget.showGrid(x=True, y=True, alpha=0.8)
 
         self._mw.arbseq_matrix_PlotWidget.addItem(self.arbseq_matrix_image)
-        self._mw.arbseq_matrix_PlotWidget.setLabel(axis='left', text='Tau', units='s')
-        self._mw.arbseq_matrix_PlotWidget.setLabel(axis='bottom', text='Time', units='s')
+        self._mw.arbseq_matrix_PlotWidget.setLabel(axis='left', text='Pulse dur.', units='ms')
+        self._mw.arbseq_matrix_PlotWidget.setLabel(axis='bottom', text='Sequence duration', units='s')
 
         # Get the colorscales at set LUT
         my_colors = ColorScaleInferno()
@@ -229,8 +229,9 @@ class ArbSeqGUI(GUIBase,arb_seq_default_functions):
     def update_plots(self):
         if self._arb_seq_logic.measurement_running or self._arb_seq_logic.update_after_stop:
             #print(arbseq_data_x, arbseq_data_y, arbseq_matrix)
-            arbseq_data_x=self._arb_seq_logic.tau_duration*1e-9
-            arbseq_data_y=self._arb_seq_logic.data
+            arbseq_data_x=self._arb_seq_logic.tau_duration*1e-9*self._arb_seq_logic.arbseq_Tau_Decay/1e3
+            arbseq_data_y=self._arb_seq_logic.data_ionize
+            # arbseq_data_y=self._arb_seq_logic.data
             arbseq_matrix=self._arb_seq_logic.scanmatrix
             arbseq_detect_x=self._arb_seq_logic.measured_times
             arbseq_detect_y=self._arb_seq_logic.data_detect
@@ -242,7 +243,7 @@ class ArbSeqGUI(GUIBase,arb_seq_default_functions):
             self._arb_seq_logic.update_after_stop=False
 
             if self._arb_seq_logic.arbseq_PerformFit:
-                self._arb_seq_logic.do_fit(self._arb_seq_logic.tau_duration,self._arb_seq_logic.data,self._arb_seq_logic.arbseq_FitFunction)
+                self._arb_seq_logic.do_fit(self._arb_seq_logic.tau_duration*self._arb_seq_logic.arbseq_Tau_Decay/1e3,self._arb_seq_logic.data_ionize,self._arb_seq_logic.arbseq_FitFunction)
                 self._mw.arbseq_FitResults_TextBrowser.setText(self._arb_seq_logic.arbseq_FitParams)
                 self._mw.arbseq_data_PlotWidget.addItem(self.arbseq_data_image_fit)
                 self.arbseq_data_image_fit.setData(self._arb_seq_logic.interpolated_x_data/1e9,self._arb_seq_logic.fit_data)

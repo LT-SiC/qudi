@@ -198,7 +198,7 @@ class SetupControlLogic(GenericLogic):
         # either by the stop button, the runtime, or number of sequence repetitions.
         seq = self._awg.mcas(name="setupcontrol", ch_dict={"2g": [1, 2], "ps": [1]})
         frequencies = np.array([self.MW1_freq, self.MW2_freq, self.MW3_freq])[[self.enable_MW1, self.enable_MW2, self.enable_MW3]]
-        seq.start_new_segment("Microwaves"+str(frequencies), loop_count=200)
+        seq.start_new_segment("Microwaves"+str(frequencies), loop_count=1000)
         if len(self.power) == 0:
             seq.asc(name="without MW",
                     A1=self.enable_A1,

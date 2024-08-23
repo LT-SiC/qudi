@@ -13,6 +13,7 @@ from logic.generic_logic import GenericLogic
 from core.pi3_utils import delay
 from PyQt5 import QtTest
 import csv
+from itertools import zip_longest
 
 from logic.poi_manager_logic import PoiManagerLogic
 from logic.save_logic import SaveLogic
@@ -26,6 +27,7 @@ from logic.counter_logic import CounterLogic
 from logic.laserscanner.laser_scanner_logic import LaserScannerLogic
 from logic.powerstabilization.powerstabilizationlogic import PowerStabilizationLogic
 from logic.biaslogic import BiasLogic
+from logic.cobolt_logic import CoboltLogic
 
 class AutomatedMeasurementLogic(GenericLogic):
     """ How to use this thing:
@@ -56,6 +58,7 @@ class AutomatedMeasurementLogic(GenericLogic):
     laserscannerlogic = Connector(interface = 'LaserScannerLogic')
     powerstabilizationlogic= Connector(interface='PowerStabilizationLogic')
     biaslogic = Connector(interface='BiasLogic')
+    # cobolt_logic = Connector(interface='CoboltLogic')
     
     # internal signals
     sigNextPoi = QtCore.Signal()
@@ -73,22 +76,37 @@ class AutomatedMeasurementLogic(GenericLogic):
     _laser_power_A1_list=[5,10,15,20,25]
     _laser_power_A2_list=[5,10,15,20,25]
     
-    _bias_voltages=list(np.arange(-1.5,0.2+0.05,0.05))    #V
+    # _bias_voltages=list(np.round(np.arange(-1.5,0.2+0.1,0.1),1))    #V
+    _bias_voltages=[2.8,2.9,3,3.1,3.2]    #V
+    # _bias_voltages=list(np.round(np.sort(list(np.arange(-1.5,0.26,0.05))*2),2))    #V
     
-    _ctl_wavelengths=list([910])  #nm
+    _ctl_wavelengths=list([895])  #nm
     # _ctl_wavelengths=list(np.arange(880,946,1))
 
-    _ctl_powers=list([10])  #µW
+    _ctl_powers=list([24])  #µW
+
+    _cobolt_powers=list([30])
+    _cobolt_power_min=0.1
+    _cobolt_power_max=30
 
     _MW_power_list=list(np.arange(-30,-16,1))*len(_laser_power_A1_list)
     
     #steps= ['resonant_optimize', 'next_laser_power_A1', 'ple']*len(_laser_power_A1_list)
     #steps= ['move', 'optimize', 'spectrum', 'spectrum']
 
-    steps= ['nextV','ple_refocus','arbseq']*len(_bias_voltages)  
+    # steps= (['nextV','ple_refocus']+['change_wavelength','arbseq']*len(_ctl_wavelengths)+['resetCTL'])*len(_bias_voltages)
     # steps= ['move']+['CTL_OFF','change_wavelength','ple_refocus', 'resonant_optimize','CTL_ON','arbseq']*len(_ctl_wavelengths)  #arbseq with res. confocal while CTL off
     # steps= ['move']+['change_wavelength','ple_refocus', 'resonant_optimize','arbseq']*len(_ctl_wavelengths)  #arbseq with res. confocal
     # steps= ['ple_refocus', 'change_wavelength', 'arbseq']*len(_ctl_wavelengths)   #arbseq without res. confocal
+
+    #find PLEs on different spots and apply voltage sweep
+    # steps = ['move','optimize',"ple"]
+
+    #check dark count rate for different voltages:
+    steps = ["ple","arbseq"]*10
+    
+    # steps = ["move","optimize"]+(["change_wavelength","resetBias"]+['nextV','ple_refocus','arbseq']*len(_bias_voltages))*len(_ctl_wavelengths)
+    # steps = ['move','resetBias','setCoboltmax','optimize','ple_refocus','setCoboltmin','resonant_optimize']+['nextV','ple_refocus']*len(_bias_voltages)
 
     #steps= (['next laser power']+['next MW power','ple']*len(_MW_power_list))*len(_laser_power_A1_list)
 
@@ -117,6 +135,13 @@ class AutomatedMeasurementLogic(GenericLogic):
             'CTL_ON': self.CTL_ON,
             'CTL_OFF': self.CTL_OFF,
             'nextV': self.nextVoltage,
+            'ScanV': self.BiasVoltages,
+            'resetCTL': self.resetCTL,
+            'resetBias': self.resetBias,
+            'setCoboltmin': self.setCoboltPowerMin,
+            'setCoboltmax': self.setCoboltPowerMax,
+            'setCoboltP': self.setCoboltPower,
+            'V_trace_record': self.V_trace_record,
         }
         
        
@@ -137,10 +162,11 @@ class AutomatedMeasurementLogic(GenericLogic):
         self._setupcontrol_logic: SetupControlLogic = self.setupcontrollogic()
         self._powerstabilization_logic: PowerStabilizationLogic = self.powerstabilizationlogic()
         self._bias_logic: BiasLogic = self.biaslogic()
+        # self._cobolt_logic: CoboltLogic = self.cobolt_logic()
 
         # self._poimanagerlogic = self.poimanagerlogic() # is already included in confocal gui
      
-        self.save_folder = "C:/Data/2024/AutomizedSpectra/" # save_folder0
+        self.save_folder = "E:/data_newPC/2024/07/" # save_folder0
         
         ## signals
         # connect internal signals
@@ -274,6 +300,8 @@ class AutomatedMeasurementLogic(GenericLogic):
         self._current_ctl_wvl=self.CTL_wavelengths[0]
         self.bias_voltages = self._bias_voltages.copy()
         self._current_bias_voltage=self.bias_voltages[0]
+        self.cobolt_powers = self._cobolt_powers.copy()
+        self._current_cobolt_power = self._cobolt_powers[0]
         self.init_pois()
         self.sigNextPoi.emit()
         return
@@ -341,6 +369,7 @@ class AutomatedMeasurementLogic(GenericLogic):
         print(self._steps)
         # start the steps
         self.CTL_wavelengths = self._ctl_wavelengths.copy()
+        self.bias_voltages = self._bias_voltages.copy()
         self.sigNextStep.emit()
         return
 
@@ -430,6 +459,8 @@ class AutomatedMeasurementLogic(GenericLogic):
         self._optimizer_logic.start_refocus(crosshair_pos, caller_tag = 'confocalgui') # TODO: fix me; What happens when caller tag is gui? Is crosshair
         while not self._optimizer_logic.refocus_finished:
             QtTest.QTest.qSleep(250)
+
+        QtTest.QTest.qSleep(2500)
         self.sigStepDone.emit()
         # self._optimizer_logic.start_refocus(initial_pos = [self._scanner_logic._current_x,self._scanner_logic._current_y,self._scanner_logic._current_z], caller_tag = 'automation_logic')
     
@@ -497,7 +528,7 @@ class AutomatedMeasurementLogic(GenericLogic):
             if "move" in self.steps:
                 l = len(max(self.poi_names))
                 format = f"0{l}d"
-                s += '-Poi_{0:{format}}'.format(self._current_poi_name,format=format)
+                s += '-Poi_{0:{format}}'.format(int(self._current_poi_name),format=format)
             
             if "arbseq" in self.steps:
                 str_array = np.array([np.array(str(i).split(".")) for i in np.asarray(self._ctl_wavelengths).astype(float)])
@@ -540,10 +571,67 @@ class AutomatedMeasurementLogic(GenericLogic):
         self.sigNextStep.emit()
         return 0
 
+    def resetCTL(self):
+        self.CTL_wavelengths = self._ctl_wavelengths.copy()
+        self.sigNextStep.emit()
+        return 0
+
+    def resetBias(self):
+        self.bias_voltages = self._bias_voltages.copy()
+        self._current_bias_voltage=self.bias_voltages[0]
+        self._bias_logic.set_voltage(self._current_bias_voltage)
+        self._bias_logic.voltages = [self._current_bias_voltage]
+        self.sigNextStep.emit()
+        return 0
+    
+    def setCoboltPowerMin(self):
+        self._cobolt_logic.power(self._cobolt_power_min)
+        self.sigNextStep.emit()
+        return 0
+    def setCoboltPowerMax(self):
+        self._cobolt_logic.power(self._cobolt_power_max)
+        self.sigNextStep.emit()
+        return 0
+    def setCoboltPower(self):
+        self._current_cobolt_power=self.cobolt_powers.pop(0)
+        self._cobolt_logic.power(self._current_cobolt_power)
+        self.sigNextStep.emit()
+        return 0
+
+    # @QtCore.Slot()
+    def V_trace_record(self):
+        print("Trace recording")
+        counts = []
+        std_err = []
+        for v in self._bias_voltages:
+            self._bias_logic.set_voltage(v)
+            print(v)
+            meas_time = int(30000*1.1) #with 10% more
+            QtTest.QTest.qSleep(meas_time)
+            counts.append(np.mean(self._counter_logic.countdata[0]))
+            std_err.append(np.std(self._counter_logic.countdata[0]))
+            if self.abort == True: break
+
+        data = [self._bias_voltages, counts, std_err]
+        export_data = zip_longest(*data, fillvalue = '')
+        with open(self.save_folder+'V_trace_record-Poi_'+ str(self._current_poi_name)+'.csv', 'w', newline='') as myfile:
+            wr = csv.writer(myfile)
+            wr.writerow(("voltage", "counts", "std_err"))
+            wr.writerows(export_data)
+        myfile.close()
+        self._bias_logic.set_voltage(0)
+        self.sigStepDone.emit()
+    
+
     def nextVoltage(self):
         self._current_bias_voltage=self.bias_voltages.pop(0)
         self._bias_logic.set_voltage(self._current_bias_voltage)
         self._bias_logic.voltages = [self._current_bias_voltage,self._current_bias_voltage]
+        self.sigNextStep.emit()
+        return 0
+    
+    def BiasVoltages(self):
+        self._bias_logic.voltages = self._bias_voltages
         self.sigNextStep.emit()
         return 0
 
@@ -627,7 +715,7 @@ class AutomatedMeasurementLogic(GenericLogic):
             if "move" in self.steps:
                 l = len(max(self.poi_names))
                 format = f"0{l}d"
-                s += '-Poi_{0:{format}}'.format(self._current_poi_name,format=format)
+                s += '-Poi_{0:{format}}'.format(int(self._current_poi_name),format=format)
             
             if "arbseq" in self.steps:
                 str_array = np.array([np.array(str(i).split(".")) for i in np.asarray(self._ctl_wavelengths).astype(float)])

@@ -431,11 +431,13 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.trace_seq()
         if self.enable_PulsedRepump:
             #self.ps.stream(seq=[[int(self.RepumpDuration*1e3),["repump"],0,0],[int(self.RepumpDecay*1e3),[],0,0]],n_runs=1) #self.RepumpDuration is in µs
+            QtTest.QTest.qSleep(200)
             self._awg.mcas_dict.stop_awgs()
             QtTest.QTest.qSleep(200)
             self.setup_repump()
             self._awg.mcas_dict['ple_repump'].run()
         if self.enable_PulsedGreen:
+            QtTest.QTest.qSleep(200)
             self._awg.mcas_dict.stop_awgs()
             QtTest.QTest.qSleep(200)
             self.setup_green()
@@ -484,6 +486,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
         self._acqusition_start_time = time.time()
         self.setup_seq(sequence_name=self.curr_sequence_name)
+        self._awg.mcas_dict[self.curr_sequence_name].run()
         self.sigScanNextLine.emit()
         self.sigScanStarted.emit()
         return 0
@@ -549,7 +552,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
         if self.upwards_scan:
             # print("running seq: ", self.curr_sequence_name) # Does it affect the sequence if it is started repeatedly?
             #self._awg.mcas_dict.stop_awgs()
-            if (self.enable_PulsedRepump and not self.RepumpWhenIonized) or (self.enable_PulsedRepump and self.RepumpWhenIonized and self.ionized): 
+            if (self.enable_PulsedRepump and not self.RepumpWhenIonized) or (self.enable_PulsedRepump and self.RepumpWhenIonized and self.ionized) or (self.enable_PulsedGreen): 
                 # only need to setup sequence again, if repump was used before.
                 self.setup_seq(sequence_name=self.curr_sequence_name)
             self._awg.mcas_dict[self.curr_sequence_name].run()
@@ -653,7 +656,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
                 QtTest.QTest.qSleep(200)
                 self.setup_repump()
                 self._awg.mcas_dict['ple_repump'].run()
-            if (self.enable_PulsedGreen):
+            if self.enable_PulsedGreen:
                 self._awg.mcas_dict.stop_awgs()
                 QtTest.QTest.qSleep(200)
                 self.setup_green()
@@ -698,6 +701,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
         return
         
     def setup_seq(self, sequence_name):
+        self.adv_mode = 'REP'
         self.power = []
         if self.enable_MW1:
             self.power += [self.MW1_Power]
@@ -761,7 +765,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
         seq = self._awg.mcas(name='ple_green', ch_dict={"2g": [1, 2], "ps": [1]}, advance_mode=self.adv_mode)
 
         seq.start_new_segment("Green", loop_count = 1, advance_mode=self.adv_mode)
-        seq.asc(repump=self.enable_PulsedGreen, length_mus=self.GreenDuration)
+        seq.asc(CTL=self.enable_PulsedGreen, length_mus=self.GreenDuration)
         
         # seq.start_new_segment("RepumpDec", advance_mode=self.adv_mode)
         # seq.asc(length_mus=self.RepumpDecay)
@@ -894,7 +898,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
     def goto_fitted_peak(self):
         if self.lock_laser and self.module_state() != 'locked':
-            freqs=np.array(self.Frequencies_Fit.split(";")[:-1]).astype(float)
+            freqs=np.array(self.Frequencies_Fit[:-1].replace("V","").split(";")[:-1]).astype(float)
             peak_volt=max(freqs)
             print("max counts of last row: ", np.max(self.xy_data[0][1]))
             # last scan ionized?
@@ -921,8 +925,6 @@ class LaserScannerLogic(GenericLogic, ple_default):
                     #self.scan_range[0],self.scan_range[1]=peak_volt-0.5*range,peak_volt+0.5*range
                 self.sigScanRangeChanged.emit(self.scan_range[0],self.scan_range[1])
                 self.laser_at_position = True
-
-              
             else: 
                 print("No PLE found in range. Retry with bigger scan range...")
                 self.scan_range[0],self.scan_range[1]=self.scan_range[0]-1,self.scan_range[1]+1
@@ -1232,16 +1234,20 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.Contrast_Fit:str=''
         self.Frequencies_Fit:str=''
         self.Linewidths_Fit:str=''
+        self.Frequencies_Fit_GHz:str=''
+        self.Linewidths_Fit_GHz:str=''
 
         factor_V_to_GHz = self._scanning_device._scanner_position_ranges[3][1] 
 
         for i in range(self.NumberOfPeaks):
             try:
                 self.Contrast_Fit=self.Contrast_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"amplitude"].value,3))+"; " # because 1 peak and 2 peak gaussian fit dont give the same result keywords, we add the 'gi_' part (missing in the 1 peak case) by multiplying the string by 1 if paeks!=1 and remove it if peaks=1.
-                self.Frequencies_Fit=self.Frequencies_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"center"].value,7))+"; "
-                self.Linewidths_Fit=self.Linewidths_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"fwhm"].value,3))+"; " #TODO convert linewidth from V to MHz
-                self.Frequencies_Fit_GHz=self.Frequencies_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"center"].value,3)*factor_V_to_GHz)+"; "
-                self.Linewidths_Fit_GHz=self.Linewidths_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"fwhm"].value,3)*factor_V_to_GHz)+"; " #TODO convert linewidth from V to MHz
+                Frequencies_Fit=str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"center"].value,5))+"V; "
+                self.Frequencies_Fit=self.Frequencies_Fit+Frequencies_Fit
+                Linewidths_Fit=str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"fwhm"].value,3))+"V; " #TODO convert linewidth from V to MHz
+                self.Linewidths_Fit=self.Linewidths_Fit+Linewidths_Fit #TODO convert linewidth from V to MHz
+                self.Frequencies_Fit_GHz=self.Frequencies_Fit_GHz+Frequencies_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"center"].value*factor_V_to_GHz,3))+"GHz; "
+                self.Linewidths_Fit_GHz=self.Linewidths_Fit_GHz+Linewidths_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"fwhm"].value*factor_V_to_GHz,3))+"GHz; " #TODO convert linewidth from V to MHz
             except:
                 self.log.warning('Error occured at fitting.')
 

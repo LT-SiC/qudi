@@ -15,6 +15,7 @@ from logic.arb_seq_logic.arb_seq_default_values_and_widget_functions import arb_
 #import connector files for easy coding and fast file finding
 from logic.save_logic import SaveLogic
 from logic.fit_logic import FitLogic
+# from hardware.Keysight_AWG_M8190.pym8190a import mcas_dict_holder
 
 
 from qtpy import QtCore
@@ -56,10 +57,15 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
     arbseq_DecayInit = StatusVar(default=1000) #rep
     arbseq_RepumpDecay = StatusVar(default=1000) #rep
     arbseq_RepumpDuration = StatusVar(default=50) #ms
+    arbseq_GreenDecay = StatusVar(default=1000) #rep
+    arbseq_GreenDuration = StatusVar(default=50) #ms
     arbseq_AOMDelay = StatusVar(default=100) #ms
     arbseq_ReadoutTime = StatusVar(default=100) #ms
     arbseq_ReadoutDecay = StatusVar(default=1000) #rep
     arbseq_Binning = StatusVar(default=10e6) #ns
+
+    meas_time = 0 #s
+    decay_time = 0 #s
 
 
     # time_tagger = counter_device().createTimeTagger()
@@ -105,9 +111,10 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
         self.fit_data = np.zeros_like(self.scanmatrix)[0]
         self.interpolated_x_data = np.linspace(0,1,len(self.fit_data))
         self.Amplitude_Fit:str=''
-        self.Frequency_Fit:str=''
-        self.Phase_Fit:str=''
-        self.tau_pulse:float=0 #ns
+        self.Beta_Fit:str=''
+        self.Lifetime_Fit:str=''
+        self.Rate_Fit:str=''
+        self.Offset_Fit:float=0 #ns
         self.SigCheckReady_Beacon.connect(self.get_data)
         self.readout_loops = 1
         
@@ -144,7 +151,75 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
             self.data=np.sum(self.scanmatrix[:,mask],axis=1) #sum up the readout-histogram after a single Tau
             self.data_detect=np.sum(self.scanmatrix,axis=0) #sum up the histograms to see the emission decay
             self.measured_times=indexes/1e12 #binwidth in seconds
+
+            # new for live plotting
+            self.data_ionize = np.zeros_like(self.data)
+            self.data_ionize_err = np.zeros_like(self.data)
+            data = self.scanmatrix
+            factor_repump   = self.arbseq_RepumpDecay / 1e3                  #Pulsed Decay
+            factor_init   = self.arbseq_DecayInit / 1e3                    #Init Decay
+            factor_read   = self.arbseq_ReadoutDecay / 1e3                    #Readout Decay
+            factor_ion   = self.arbseq_Tau_Decay/ 1e3                     #Tau Decay
+
+            Time = self.measured_times*1e9  # ns
+            CTL_Time  = self.tau_duration
+            Time = np.array(Time) / 1e9 # s
+            CTL_Time = np.array(CTL_Time) / 1e3 *factor_ion# s
+
+            repump_t  = self.arbseq_RepumpDuration / 1e3 *factor_repump # s     #Pulsed Duration
+            init_t    = self.arbseq_InitTime / 1e3 *factor_init # s       #Init Time
+            readout_t = self.arbseq_ReadoutTime / 1e3 *factor_read # s       #Readout Time
+            bg_CTL   = self.arbseq_AOMDelay /1e3   *factor_read # s       #AOM Delay
+
+            if self.meas_time == 0:
+                meas_time = init_t/5
+            else:
+                meas_time = min(self.meas_time,init_t)
+
+            if self.decay_time == 0:
+                decay_time = min(meas_time,init_t)/10# s
+            else:
+                decay_time = min(self.decay_time,meas_time)
+
+
+            for i in range(data.shape[0]):
+                min_1, max_1 = repump_t+init_t-meas_time+decay_time, repump_t+init_t-decay_time
+                min_2, max_2 = repump_t+init_t+CTL_Time[i]+min(decay_time,readout_t/5), repump_t+init_t+CTL_Time[i] + min(meas_time,readout_t)-min(decay_time,readout_t/5)
+                min_off, max_off = Time[-1] - min(meas_time,bg_CTL)+min(decay_time,bg_CTL/5),Time[-1]-min(decay_time,bg_CTL/5)
+
+                line = data[i]
+
+                mask_off = (Time >= min_off) & (Time <= max_off)
+                off = np.sum(line[mask_off])
+                doff = np.sqrt(off)/len(line[mask_off])
+                off /= len(line[mask_off])
+
+                mask_1 = (Time >= min_1) & (Time <= max_1)
+                c1= np.sum(line[mask_1])
+                dc1 = np.sqrt(c1)/len(line[mask_1])
+                c1 /= len(line[mask_1])
+
+                mask_2 = (Time >= min_2) & (Time <= max_2)
+                c2 = np.sum(line[mask_2])
+                dc2 = np.sqrt(c2)/len(line[mask_2])
+                c2 /= len(line[mask_2])
+
+                try:
+                    ratio = (c2-off)/(c1-off)
+                    err = np.abs((c2-off)/(c1-off)**2) * dc1 + np.abs((1)/(c1-off)) * dc2 + np.abs((c2-c1)/(c1-off)**2) * doff
+                except ZeroDivisionError:
+                    try:
+                        ratio = (c2)/(c1)
+                        err = 0
+                    except ZeroDivisionError:
+                        ratio = 1
+                        err = 0
+
+                self.data_ionize[i] = ratio
+                self.data_ionize_err[i] = err
+
             self.sigArbSeqPlotsUpdated.emit()
+
 
 
     def clock(self):
@@ -177,8 +252,11 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
         data_raw = OrderedDict()
         data_detection = OrderedDict()
         data_matrix = OrderedDict()
+        data_raw['ionization prob.'] = self.data_ionize
+        data_raw['ionization prob. error'] = self.data_ionize_err
         data_raw['count data (counts)'] = self.data
-        data_raw['Tau (ns)'] = self.tau_duration
+        # data_raw['Tau (ms)'] = self.tau_duration*self.arbseq_Tau_Decay/1e3
+        data_raw['Tau (ms)'] = self.tau_duration
         data_detection['Detection Time (ns)'] = self.measured_times*1e9 # save in [ns]
         data_detection['Detection Counts (counts)'] = self.data_detect
         data_matrix['Detection Time + Tau'] = self.scanmatrix
@@ -202,35 +280,37 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
         parameters['A1 (bool)'] = self.arbseq_A1
         parameters['A2 (bool)'] = self.arbseq_A2
         parameters['Pulsed Repump (bool)'] = self.arbseq_PulsedRepump
-        parameters['Pulsed Duration (µs)'] = self.arbseq_RepumpDuration
-        parameters['Pulsed Decay (µs)'] = self.arbseq_RepumpDecay
+        parameters['Pulsed Duration (us)'] = self.arbseq_RepumpDuration
+        parameters['Pulsed Decay (us)'] = self.arbseq_RepumpDecay
         parameters['CW Repump (bool)'] = self.arbseq_CWRepump
-        parameters['Init Time (µs)'] = self.arbseq_InitTime
-        parameters['Init Decay (µs)'] = self.arbseq_DecayInit
-        parameters['Readout Time (µs)'] = self.arbseq_ReadoutTime
-        parameters['Readout Decay (µs)'] = self.arbseq_ReadoutDecay
+        parameters['Init Time (us)'] = self.arbseq_InitTime
+        parameters['Init Decay (us)'] = self.arbseq_DecayInit
+        parameters['Readout Time (us)'] = self.arbseq_ReadoutTime
+        parameters['Readout Decay (us)'] = self.arbseq_ReadoutDecay
         parameters['Readout via A1 (bool)'] = self.arbseq_A1Readout
         parameters['Readout via A2 (bool)'] = self.arbseq_A2Readout
         parameters['AOM Delay (ns)'] = self.arbseq_AOMDelay
         parameters['Integration Window (ns)'] = self.arbseq_IntegrationTime
         parameters['Binning (ns)'] = self.arbseq_Binning
         parameters['Amplitude Fit'] = self.Amplitude_Fit
-        parameters['Frequency Fit'] = self.Frequency_Fit
-        parameters['Phase Fit'] = self.Phase_Fit
-        parameters['Pi pulse']= self.pi_pulse
+        parameters['Beta Fit'] = self.Beta_Fit
+        parameters['Lifetime Fit'] = self.Lifetime_Fit
+        # parameters['Rate Fit'] = self.Rate_Fit
+        parameters['Offset Fit']= self.Offset_Fit
+       
 
-        print(data_raw['Tau (ns)'])
+        print(data_raw['Tau (ms)'])
         print(data_raw['count data (counts)'])
         fig = self.draw_figure(
-            data_raw['Tau (ns)'],
-            data_raw['count data (counts)'],
+            data_raw['Tau (ms)'],
+            data_raw['ionization prob.'],
             data_matrix['Detection Time + Tau'],
             data_detection['Detection Time (ns)'],
             data_detection['Detection Counts (counts)'],
             self.interpolated_x_data,
             self.fit_data,
             cbar_range=colorscale_range,
-            percentile_range=percentile_range
+            percentile_range=percentile_range,
         )
 
         self._save_logic.save_data(data_matrix,
@@ -283,11 +363,11 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
         prefix = ['', 'k', 'M', 'G', 'T']
         prefix_index = 0
 
-        # Rescale counts data with SI prefix
-        while np.max(count_data) > 1000:
-            count_data = count_data / 1000
-            #fit_count_vals = fit_count_vals / 1000
-            prefix_index = prefix_index + 1
+        # # Rescale counts data with SI prefix
+        # while np.max(count_data) > 1000:
+        #     count_data = count_data / 1000
+        #     #fit_count_vals = fit_count_vals / 1000
+        #     prefix_index = prefix_index + 1
 
         counts_prefix = prefix[prefix_index]
 
@@ -317,12 +397,17 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
         # Create figure
         fig, (ax_mean, ax_matrix, ax_detection) = plt.subplots(nrows=3, ncols=1)
 
-        ax_mean.plot(time_data, count_data, linestyle=':', linewidth=0.5)
 
+
+        
+
+
+        ax_mean.plot(time_data, count_data, linestyle=':', linewidth=0.5)
         # Do not include fit curve if there is no fit calculated.
         if max(fit_count_vals) > 0:
             ax_mean.plot(fit_freq_vals, fit_count_vals, marker='None')
-        ax_mean.set_ylabel('Fluorescence (' + counts_prefix + 'counts)')
+        # ax_mean.set_ylabel('Fluorescence (' + counts_prefix + 'counts)')
+        ax_mean.set_xlabel('Laser pulse durations (ms)')
         ax_mean.set_xlim(np.min(time_data), np.max(time_data))
         matrixplot = ax_matrix.imshow(
             matrix_data,
@@ -330,23 +415,24 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
             origin='lower',
             vmin=cbar_range[0],
             vmax=cbar_range[1],
-            extent=[np.min(time_data),
-                    np.max(time_data),
-                    0,
-                    np.shape(matrix_data)[0]
+            extent=[np.min(detection_time),
+                    np.max(detection_time),
+                    np.min(time_data)-(np.max(time_data)-np.min(time_data))/(np.shape(matrix_data)[0]-1)/2,
+                    np.max(time_data)+(np.max(time_data)-np.min(time_data))/(np.shape(matrix_data)[0]-1)/2
                     ],
             aspect='auto',
             interpolation='nearest')
 
-        ax_matrix.set_xlabel('Frequency (' + mw_prefix + 'Hz)')
-        ax_matrix.set_ylabel('Scan #')
+        ax_matrix.set_xlabel('Sequence duration (' + mw_prefix + 's)')
+        ax_matrix.set_ylabel('Pulse dur. (ms)')
 
         ax_detection.plot(detection_time, detection_counts, linestyle=':', linewidth=0.5)
+        ax_detection.set_xlabel('Sequence duration (' + mw_prefix + 's)')
         ax_detection.set_ylabel('Fluorescence (' + counts_prefix + 'counts)')
         ax_detection.set_xlim(np.min(detection_time), np.max(detection_time))
 
-        # Adjust subplots to make room for colorbar
-        fig.subplots_adjust(right=0.8)
+        # Adjust subplots to make room for colorbar & upper xlabel
+        fig.subplots_adjust(right=0.8,hspace=0.6)
 
         # Add colorbar axis to figure
         cbar_ax = fig.add_axes([0.85, 0.15, 0.02, 0.7])
@@ -393,173 +479,6 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
         #return V_pp / float(self.awg_device.amp1) #awg_amplitude
 
 
-    # ### THIS WAS USED TO MEASURE SSR TRACE ###
-    # def setup_seq(
-    #         self,
-    #         arbseq_Tau_Min=None,
-    #         arbseq_Tau_Max=None,
-    #         arbseq_Tau_Step=None,
-    #         arbseq_Tau_Decay=None,
-
-    #         arbseq_MW1=None,
-    #         arbseq_MW1_Freq=None,
-    #         arbseq_MW1_Power=None,
-    #         arbseq_MW2=None,
-    #         arbseq_MW2_Freq=None,
-    #         arbseq_MW2_Power=None,
-    #         arbseq_MW3=None,
-    #         arbseq_MW3_Freq=None,
-    #         arbseq_MW3_Power=None,
-    #         arbseq_MW4=None,
-    #         arbseq_MW4_Freq=None,
-    #         arbseq_MW4_Power=None,
-    #         arbseq_MW4_Duration=None,
-    #         arbseq_MW5=None,
-    #         arbseq_MW5_Freq=None,
-    #         arbseq_MW5_Power=None,
-    #         arbseq_MW5_Duration=None,
-
-    #         arbseq_A1=None,
-    #         arbseq_A2=None,
-    #         arbseq_A1Readout=None,
-    #         arbseq_A2Readout=None,
-    #         arbseq_InitTime=None,
-    #         arbseq_DecayInit=None,
-    #         arbseq_RepumpDecay=None,
-    #         arbseq_CWRepump=None,
-    #         arbseq_PulsedRepump=None,
-    #         arbseq_RepumpDuration=None,
-    #         arbseq_AOMDelay=None,
-    #         arbseq_IntegrationTime=None,
-    #         arbseq_Binning=None,
-    #         arbseq_Interval=None,
-    #         arbseq_PeriodicSaving=None,
-    #         arbseq_Stoptime=None,
-
-    #         arbseq_ReadoutTime=None,
-    #         arbseq_ReadoutDecay=None
-    # ):
-    #     gateMW_dur = 0.256
-    #     self.round_to = 16
-    #     round_to = self.round_to
-
-    #     trans = {'L1': 3837.874445, 'L2': 3846.570445, 'C1': 3907.7906053279216, 'C2': 3916.438605327922,
-    #              'R1': 3977.480326, 'R2': 3986.160326}
-
-    #     ancient_self_variables = {}
-    #     sig = inspect.signature(self.setup_seq)
-    #     for parameter in sig.parameters.keys():
-    #         # print(parameter)
-    #         exec(f"ancient_self_variables['{parameter}']=self.{parameter}")
-    #         if locals()[parameter] != None:
-    #             exec(f"self.{parameter}={parameter}")
-
-    #     # Setup list of all frequencies which the sequence should output.
-    #     self.tau_duration = np.arange(self.arbseq_Tau_Min, self.arbseq_Tau_Max + self.arbseq_Tau_Step, self.arbseq_Tau_Step) / 1000
-    #     self.time_differences.stop()
-    #     QtTest.QTest.qSleep(200)
-
-    #     self.time_differences = self.setup_time_tagger(n_histograms=len(self.tau_duration),
-    #                                                    binwidth=int(self.arbseq_Binning * 1000),
-    #                                                    # arbseq_Binning input is in ns.
-    #                                                    n_bins=int(self.arbseq_ReadoutTime / self.arbseq_Binning)
-    #                                                    )
-
-
-
-    #     seq = self._awg.mcas(name="ArbSeq", ch_dict={"2g": [1, 2], "ps": [1]})
-    #     # generate segment of repump which starts at each repetition of the sequence.
-    #     seq.start_new_segment("Start")
-
-    #     ### Start counting ###
-    #     seq.asc(name='tt_sync1', length_mus=E.round_length_mus_to_x_multiple_ps(0.016, round_to),
-    #             memory=True)  # Set histogram index to 0
-    #     seq.asc(name='wait', length_mus=E.round_length_mus_to_x_multiple_ps(0.016, round_to))
-    #     seq.asc(name='tt_sync2', length_mus=E.round_length_mus_to_x_multiple_ps(0.016, round_to),
-    #            gate=True)  # increment histogram index
-    #     seq.asc(name='wait', length_mus=E.round_length_mus_to_x_multiple_ps(0.016, round_to))
-    #     seq.asc(name='tt_sync2', length_mus=E.round_length_mus_to_x_multiple_ps(0.016, round_to),
-    #            gate=True)  # increment histogram index
-        
-    #     ### Repump ###
-    #     seq.asc(length_mus=5, repump=True, name='Repump')
-    #     seq.asc(length_mus=5, repump=False, name='RepumpDecay')
-
-    #     ### Init electron spin ###
-    #     loops, correction_mus = shared.calculate_loop_count(50, 5)
-    #     seq.start_new_segment(name='init', loop_count=loops)
-    #     seq.asc(
-    #         A2=True,
-    #         gateMW=True,
-    #         length_mus=E.round_length_mus_to_x_multiple_ps(10),
-    #         name='resonant_init',
-    #         pd2g1={'type': 'sine', 'phases': [0], 'amplitudes': [0.3,0.3], 'frequencies': [3837.874445, 3846.570445]},
-    #     )
-    #     seq.start_new_segment(name='sequence', loop_count=1)
-    #     seq.asc(length_mus=E.round_length_mus_to_x_multiple_ps(1), name='Init Decay')
-
-    #     ### CnNOTe ###
-    #     seq.asc(length_mus=E.round_length_mus_to_x_multiple_ps(0.256), gateMW=True)
-    #     sna.electron_arbseq(
-    #         seq,
-    #         new_segment=False,
-    #         gateMW=True,
-    #         length_mus=E.round_length_mus_to_x_multiple_ps(0.512),
-    #         amplitudes=[0.80586849],
-    #         frequencies=[3846.570445],
-    #         mixer_deg=[-90]
-    #     )
-
-    #     ### Flip Nuc spin ###
-    #     seq.asc(length_mus=E.round_length_mus_to_x_multiple_ps(1), name='RFSafetyWait1')
-    #     seq.asc(
-    #         length_mus=E.round_length_mus_to_x_multiple_ps(28.5),
-    #         name='nuc',
-    #         pd2g2={"type": "sine", "frequencies": [5.512 + 0.0021], "amplitudes": [0.5], "phases": [0],
-    #                 "phase_type_offset": 'absolute'}
-    #     )
-    #     seq.asc(length_mus=E.round_length_mus_to_x_multiple_ps(5), name='RFSafetyWait2')
-
-    #     ### Init electron spin to bring AOM into steady state ###
-    #     loops, correction_mus = shared.calculate_loop_count(500, 5)
-    #     seq.start_new_segment(name='init', loop_count=loops)
-    #     seq.asc(
-    #         A2=True,
-    #         gateMW=True,
-    #         length_mus=E.round_length_mus_to_x_multiple_ps(10),
-    #         name='resonant_init',
-    #         pd2g1={'type': 'sine', 'phases': [0], 'amplitudes': [0.3,0.3], 'frequencies': [3837.874445, 3846.570445]},
-    #     )
-    #     seq.start_new_segment(name='sequence', loop_count=1)
-    #     seq.asc(length_mus=E.round_length_mus_to_x_multiple_ps(1), name='Init Decay')
-
-        
-    #     ### Rep readout
-    #     #number_reps = 1
-    #     # seq.asc(name='readout_decay', length_mus=E.round_length_mus_to_x_multiple_ps(0.016), gate=True)
-    #     #for reps in range(number_reps):
-    #     seq.start_new_segment(name='init', loop_count=len(self.tau_duration))
-    #     seq.asc(gateMW=True, name='gateMW', length_mus=0.256)
-    #     pd2g1 = {'frequencies': [trans['L1']], 'type': 'sine',
-    #             'amplitudes': [0.80586849], 'length_mus': 0.512}
-    #     seq.asc(pd2g1=pd2g1, gateMW=True, name='MW')
-    #     pd2g1 = {'frequencies': [trans['R1']], 'type': 'sine',
-    #             'amplitudes': [0.7652966], 'length_mus': 0.512}
-    #     seq.asc(pd2g1=pd2g1, gateMW=True, name='MW')
-    #     seq.asc(length_mus=E.round_length_mus_to_x_multiple_ps(14.976), A2=True, name='Laser A2')
-    #     seq.asc(length_mus=E.round_length_mus_to_x_multiple_ps(1.024), name='Count')
-
-
-    #     seq.start_new_segment(name='decay', loop_count=1)
-    #     seq.asc(name='decay', length_mus=E.round_length_mus_to_x_multiple_ps(0.016))
-            
-    #     # self.awg.mcas.status = 1
-    #     self._awg.mcas_dict.stop_awgs()
-    #     self._awg.mcas_dict['ArbSeq'] = seq
-    #     self._awg.mcas_dict.print_info()
-    #     self._awg.mcas_dict['ArbSeq'].run()
-    #     for key, val in ancient_self_variables.items():  # restore the ancient variables
-    #         exec(f"self.{key}={val}")
     def setup_seq(
             self,
             arbseq_Tau_Min=None,
@@ -736,50 +655,37 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
         y_data=y_data.astype(np.float)
         self.interpolated_x_data=np.linspace(x_data.min(),x_data.max(),len(x_data)*10) # for the fitting part
 
-        if tag == 'Cosinus':
-            #print("Doing Cosinus")
-            model,params=self._fit_logic.make_sine_model()
-
-            result = self._fit_logic.make_sine_fit(
-                                x_axis=x_data,
-                                data=y_data,
-                                units='Hz',
-                                estimator=self._fit_logic.estimate_sine
-                                )
-
-            #fit_func=self._fit_logic.sine
-            #result=fit_func.fit(x_data,y_data)
-            #self.fit_data = fit_func(x=self.interpolated_x_data, *result.x)
-
-        if tag == 'Cosinus+Phase':
+        if tag == 'Exponential':
             #print("Doing Cosinus+Phase")
-            model,params=self._fit_logic.make_sine_model()
+            model,params=self._fit_logic.make_decayexponential_model()
 
-            result = self._fit_logic.make_sine_fit(
+            result = self._fit_logic.make_decayexponential_fit(
                                 x_axis=x_data,
                                 data=y_data,
-                                units='Hz',
-                                estimator=self._fit_logic.estimate_sine
+                                units='sy',
+                                estimator=self._fit_logic.estimate_decayexponential
                                 )
 
         
         self.fit_data = model.eval(x=self.interpolated_x_data, params=result.params)
         self.Amplitude_Fit:str=''
-        self.Frequency_Fit:str=''
-        self.Phase_Fit:str=''
-        self.tau_pulse:float=0 #ns
+        self.Beta_Fit:str=''
+        self.Lifetime_Fit:str=''
+        self.Rate_Fit:str=''
+        self.Offset_Fit:float=0 #ns
 
         try:
             self.Amplitude_Fit=str(round(result.params["amplitude"].value,2))
-            self.Frequency_Fit=str(round(result.params["frequency"].value*1e3,2))
-            self.Phase_Fit=str(round(result.params["phase"].value*180/np.pi,2))
-            self.pi_pulse=round(1/(result.params["frequency"].value)/2,2)
+            self.Beta_Fit=str(round(result.params["beta"].value*1e3,2))
+            self.Lifetime_Fit=str(round(result.params["lifetime"].value,2))
+            self.Rate_Fit=str(round(1/result.params["lifetime"].value*1e3,2))
+            self.Offset_Fit=round(1/(result.params["offset"].value)/2,2)
         except Exception as e:
             print("an error occured during fitting in ArbSeq:\n", e)
 
-        self.arbseq_FitParams="Amplitude: "+self.Amplitude_Fit+"\n"+"Frequency  (MHz): "+self.Frequency_Fit+"\n"+"Pi pulse (ns): "+str(self.pi_pulse)+"\n"+"Phase: "+self.Phase_Fit
+        self.arbseq_FitParams="Amplitude: "+str(self.Amplitude_Fit)+"\n"+"Beta (): "+str(self.Beta_Fit)+"\n"+"Lifetime (ms): "+str(self.Lifetime_Fit)+"\n"+"Rate (Hz): "+str(self.Rate_Fit)+"\n"+"Offset: "+str(self.Offset_Fit)
         
-        self.sigFitPerformed.emit(1/(result.params["frequency"].value)/2)
+        # self.sigFitPerformed.emit(1/(result.params["frequency"].value)/2)
 
         return self.interpolated_x_data,self.fit_data,result
 

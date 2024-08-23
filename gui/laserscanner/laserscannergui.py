@@ -115,8 +115,13 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self._mw.ple_data_PlotWidget.addItem(self.scan_image)#
         self._mw.ple_data_PlotWidget.addItem(self.scan_fit_image)#
         #self._mw.voltscan_ViewWidget.addItem(self.scan_fit_image)
-        self._mw.ple_data_PlotWidget.showGrid(x=True, y=True, alpha=0.8) 
+        self._mw.ple_data_PlotWidget.showGrid(x=True, y=True, alpha=0.8)
+        self._mw.ple_data_PlotWidget.setLabel(axis='left', text='Fluorescence', units='Counts')
+        self._mw.ple_data_PlotWidget.setLabel(axis='bottom', text='Detuning', units='GHz')
+
         self._mw.ple_matrix_PlotWidget.addItem(self.scan_matrix_image)
+        self._mw.ple_matrix_PlotWidget.setLabel(axis='left', text='# Scan', units='')
+        self._mw.ple_matrix_PlotWidget.setLabel(axis='bottom', text='Scan voltage', units='V')
 
         #self._mw.voltscan2_ViewWidget.addItem(self.scan_image2)
         #self._mw.voltscan2_ViewWidget.addItem(self.scan_fit_image)

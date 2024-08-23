@@ -131,6 +131,8 @@ class queue_logic(GenericLogic):
     poimanagerlogic = Connector('PoiManagerLogic')
     powerstabilization_logic = Connector("PowerStabilizationLogic")
     counterlogic1=Connector("CounterLogic")
+    biaslogic=Connector('BiasLogic')
+    ctllogic=Connector('CTLLogic')
 
 
     update_selected_user_script_combo_box_signal = pyqtSignal(collections.OrderedDict)
@@ -165,6 +167,8 @@ class queue_logic(GenericLogic):
         self._poimanagerlogic = self.poimanagerlogic()
         self._counter=self.counterlogic1()
         self._fast_counter_device = self.fastcounter()  # FIXME
+        self._biaslogic=self.biaslogic()
+        self._ctllogic=self.ctllogic()
         self.create_odmr()  #only logic (no gui)
         self.init_run()
         self.write_standard_awg_sequences()

@@ -31,6 +31,8 @@ class arb_seq_default_values_and_widget_functions:
         arbseq_A2Readout:bool=T
         arbseq_CWRepump:bool=T
         arbseq_PulsedRepump:bool=F
+        arbseq_CWGreen:bool=F
+        arbseq_PulsedGreen:bool=F
         
         arbseq_IntegrationTime:float= 333 #ns
         
@@ -54,7 +56,7 @@ class arb_seq_default_values_and_widget_functions:
         arbseq_Frequencies_Fit:float=70
         arbseq_Linewidths_Fit:float=1
 
-        arbseq_FitFunction:str='Cosinus'
+        arbseq_FitFunction:str='Exponential'
         arbseq_FitParams:str=""
         update_after_stop:bool=F
 
@@ -119,6 +121,10 @@ class arb_seq_default_values_and_widget_functions:
                 #print('done something with arbseq_CWRepump_CheckBox')
                 self.arbseq_CWRepump=on==2
 
+        def arbseq_CWGreen_CheckBox_StateChanged(self,on):
+                #print('done something with arbseq_CWGreen_CheckBox')
+                self.arbseq_CWGreen=on==2
+
         def arbseq_Tau_Decay_lineEdit_textEdited(self,text):
                 #print('done something with arbseq_Tau_Decay_lineEdit. Text=',text)
                 try:
@@ -141,6 +147,13 @@ class arb_seq_default_values_and_widget_functions:
                 #print('done something with arbseq_RepumpDuration_LineEdit. Text=',text)
                 try:
                         self.arbseq_RepumpDuration=float(text.replace(",","."))
+                except:
+                        pass
+
+        def arbseq_GreenDuration_LineEdit_textEdited(self,text):
+                #print('done something with arbseq_GreenDuration_LineEdit. Text=',text)
+                try:
+                        self.arbseq_GreenDuration=float(text.replace(",","."))
                 except:
                         pass
 
@@ -287,6 +300,10 @@ class arb_seq_default_values_and_widget_functions:
         def arbseq_PulsedRepump_CheckBox_StateChanged(self,on):
                 #print('done something with arbseq_PulsedRepump_CheckBox')
                 self.arbseq_PulsedRepump=on==2
+
+        def arbseq_PulsedGreen_CheckBox_StateChanged(self,on):
+                #print('done something with arbseq_PulsedGreen_CheckBox')
+                self.arbseq_PulsedGreen=on==2
 
         def arbseq_MW3_CheckBox_StateChanged(self,on):
                 #print('done something with arbseq_MW3_CheckBox')

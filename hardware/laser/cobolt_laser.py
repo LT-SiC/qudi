@@ -21,14 +21,18 @@ class HubnerCobolt(Base,CoboltInterface):#, Interface): #?
             module.Class: 'laser.cobolt_laser'
             COM_Port: 'COM4'
     '''
-    COM_Port = ConfigOption('COM', "COM4", missing='warn') 
+    COM_Port = ConfigOption('COM_Port', "COM4", missing='warn') 
     serialnumber = ConfigOption('SN', 23393, missing='nothing') 
 
     def on_activate(self):
-        self._cobolt = Cobolt06MLD(port=self.COM_Port)
+        try:
+            self._cobolt = Cobolt06MLD(port=self.COM_Port)
+        except:
+            self._cobolt = None
+            print(f"Could not connect cobolt laser at {self.COM_Port}. Is software GUI still running?")
         if self._cobolt.is_connected():
-            # print(self._cobolt.__class__," connected")
-            self._cobolt.turn_on()
+            print(self._cobolt.__class__," connected")
+            # self._cobolt.turn_on()
         # self.connection = dlcsdk.NetworkConnection(self.IP)
         # self.dlc = dlcsdk.DLCpro(self.connection)
         # self.dlc.open()
@@ -38,7 +42,8 @@ class HubnerCobolt(Base,CoboltInterface):#, Interface): #?
         # self.get_limits_from_dlc()
 
     def on_deactivate(self):
-        self._cobolt.turn_off()
+        # self._cobolt.turn_off()
+        self._cobolt.disconnect()
 
     def get_mode(self):
         self.mode = self._cobolt.get_mode()
