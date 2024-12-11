@@ -34,6 +34,10 @@ from core.configoption import ConfigOption
 from logic.generic_logic import GenericLogic
 from core.util.mutex import Mutex
 
+from logic.counter_logic import CounterLogic
+from logic.save_logic import SaveLogic
+from logic.fit_logic import FitLogic
+from hardware.high_finesse_wavemeter import HighFinesseWavemeter
 
 class HardwarePull(QtCore.QObject):
     """ Helper class for running the hardware communication in a separate thread. """
@@ -143,13 +147,13 @@ class WavemeterLoggerLogic(GenericLogic):
 
         self.stopRequested = False
 
-        self._wavemeter_device = self.wavemeter1()
+        self._wavemeter_device:HighFinesseWavemeter = self.wavemeter1()
 #        print("Counting device is", self._counting_device)
 
-        self._save_logic = self.savelogic()
-        self._counter_logic = self.counterlogic()
+        self._save_logic:SaveLogic = self.savelogic()
+        self._counter_logic:CounterLogic = self.counterlogic()
+        self._fit_logic:FitLogic = self.fitlogic()
 
-        self._fit_logic = self.fitlogic()
         self.fc = self._fit_logic.make_fit_container('Wavemeter counts', '1d')
         self.fc.set_units(['Hz', 'c/s'])
 

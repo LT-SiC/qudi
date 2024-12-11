@@ -27,6 +27,9 @@ from core.util.network import netobtain
 from logic.generic_logic import GenericLogic
 import time
 
+from logic import save_logic
+from hardware.spectrometer.oceanoptics_spectrometer import OceanOptics
+
 def automatic_flip(func):
     def wrapper(self, *arg, **kw):
         if self._automatic_flip_mirror:
@@ -122,7 +125,7 @@ class SpectrumLogic(GenericLogic):
         self.diff_spec_data_mod_off = np.array([])
         self.repetition_count = 0    # count loops for differential spectrum
 
-        self._spectrometer_device = self.spectrometer()
+        self._spectrometer_device:OceanOptics = self.spectrometer()
         self.integration_time = self._spectrometer_device._integration_time
         self._odmr_logic = self.odmrlogic()
         self._save_logic = self.savelogic()

@@ -41,17 +41,23 @@ import logging; logger = logging.getLogger(__name__)
 import base64
 import hashlib
 
+# for analysis:
 from scipy.signal import find_peaks
 from scipy.interpolate import UnivariateSpline
+from scipy.optimize import curve_fit
 
 from core.configoption import ConfigOption
 
 from logic.laserscanner.ple_default_values_and_widget_functions import ple_default_values_and_widget_functions as ple_default
+from gui.laserscanner.connectors_and_set_default import initialize_connections_and_defaultvalue
 
 from logic.confocal_logic import ConfocalLogic
 from logic.save_logic import SaveLogic
 from logic.biaslogic import BiasLogic
 from logic.fit_logic import FitLogic
+from logic.wavemeter_logger_logic import WavemeterLoggerLogic
+from hardware.national_instruments_x_series import NationalInstrumentsXSeries
+
 
 
 class LaserScannerLogic(GenericLogic, ple_default):
@@ -79,13 +85,17 @@ class LaserScannerLogic(GenericLogic, ple_default):
     NumberOfPeaks = StatusVar('NumberOfPeaks', default=2)
     _scan_speed = StatusVar('scan_speed', 0.1)
     _static_v = StatusVar('goto_voltage', 0)
+    factor_V_to_GHz = StatusVar('factor_V_to_GHz', 1)
+    current_freq = StatusVar('current_freq', "")
     fc = StatusVar('fits', None)
     enable_A1 = StatusVar('enable_A1', False)
     enable_A2 = StatusVar('enable_A2', True)
     enable_Repump = StatusVar('enable_Repump', False)
     enable_PulsedRepump = StatusVar('enable_PulsedRepump', True)
-    enable_Green = StatusVar('enable_Green', False)
-    enable_PulsedGreen = StatusVar('enable_PulsedGreen', False)
+    enable_CTL = StatusVar('enable_CTL', False)
+    enable_PulsedCTL = StatusVar('enable_PulsedCTL', False)
+    enable_Blue = StatusVar('enable_Blue', False)
+    enable_PulsedBlue = StatusVar('enable_PulsedBlue', False)
     RepumpWhenIonized = StatusVar('RepumpWhenIonized', False)
     MW1_Freq = StatusVar('MW1_freq', 70)
     MW2_Freq = StatusVar('MW2_freq', 140)
@@ -111,6 +121,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
     sigScanRangeAdjustment = QtCore.Signal(int)
     sigScanRangeChanged = QtCore.Signal(float, float)
     sigLockLaserChanged = QtCore.Signal(bool)
+    sigPLEfactorChanged = QtCore.Signal(float)
     
     # to cut the scan line into smaller parts:
     mode=0
@@ -134,6 +145,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.hashed = False
         self.ionized = False
         self.laser_at_position = False
+        self.measurement_running = False
  
         
 
@@ -145,14 +157,16 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
         self.adv_mode = 'SING'
         self.peak_min_counts=300
+        
+        
 
     def on_activate(self):
         """ Initialisation performed during activation of the module.
         """
-        self._scanning_device = self.confocalscanner1()
+        self._scanning_device: NationalInstrumentsXSeries = self.confocalscanner1()
         self._save_logic: SaveLogic = self.savelogic()
         self._awg = self.mcas_holder()
-        self._wavemeterlogic = self.wavemeterlogic()
+        self._wavemeterlogic: WavemeterLoggerLogic = self.wavemeterlogic()
         self._fit_logic: FitLogic = self.fitlogic()
         self.a_range = self._scanning_device.get_position_range()[3]
 
@@ -209,12 +223,15 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.stop_list=[]
 
         self.interpolated_x_data=np.linspace(0,1,100)
+        self.measurement_running = False
+        self.factor_V_to_GHz = self._scanning_device._scanner_position_ranges[3][1]
 
     def on_deactivate(self):
         """ Deinitialisation performed during deactivation of the module.
         """
         self.stopRequested = True
         self.AbortRequested = False
+        self.measurement_running = False
 
     
     @property
@@ -373,7 +390,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.scan_matrix = np.zeros((self.number_of_repeats, scan_length))
         self.plot_matrix = np.zeros((self.number_of_lines, scan_length))
         self.plot_x = np.linspace(self.scan_range[0], self.scan_range[1], scan_length)
-        self.plot_x_frequency=self.plot_x*self._scanning_device._scanner_position_ranges[3][1] #1000 MHz equals 0.22 V on the PLE x range with FeedForward on # 1000 MHz equals 0.30 V on the PLE x range without FeedForward
+        self.plot_x_frequency=self.plot_x*self.factor_V_to_GHz #1000 MHz equals 0.22 V on the PLE x range with FeedForward on # 1000 MHz equals 0.30 V on the PLE x range without FeedForward
         self.plot_y = np.zeros(scan_length)
         self.fit_data = np.zeros(scan_length)
         self.fit_x = np.linspace(self.scan_range[0], self.scan_range[1], scan_length)
@@ -413,6 +430,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
         """
         self._awg.mcas_dict.stop_awgs()
         self.laser_at_position = False
+        self.measurement_running = True
         # print(self._scanning_device.module_state()) #self._scanning_device.module_state() is not the same as _optimizer_logic.module_state.current! So _s_d.module_state is "idle" even when confocal refocus runs.
         # if self._scanning_device.module_state() == 'locked':
         #     logger.error('Nicard is in module state "locked".')
@@ -436,12 +454,18 @@ class LaserScannerLogic(GenericLogic, ple_default):
             QtTest.QTest.qSleep(200)
             self.setup_repump()
             self._awg.mcas_dict['ple_repump'].run()
-        if self.enable_PulsedGreen:
+        if self.enable_PulsedCTL:
             QtTest.QTest.qSleep(200)
             self._awg.mcas_dict.stop_awgs()
             QtTest.QTest.qSleep(200)
-            self.setup_green()
-            self._awg.mcas_dict['ple_green'].run()
+            self.setup_ctl()
+            self._awg.mcas_dict['ple_ctl'].run()
+        if self.enable_PulsedBlue:
+            QtTest.QTest.qSleep(200)
+            self._awg.mcas_dict.stop_awgs()
+            QtTest.QTest.qSleep(200)
+            self.setup_blue()
+            self._awg.mcas_dict['ple_blue'].run()
         self.current_position = self._scanning_device.get_scanner_position() #Never used
 
         if v_min is not None:
@@ -481,7 +505,6 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.start_list=[]
         self.stop_list=[]
         # initialize wavemeter data
-        #self._wavemeterlogic._hardware_pull._parentclass._wavelength_data=[]
         self.starttime = time.time()
 
         self._acqusition_start_time = time.time()
@@ -534,11 +557,15 @@ class LaserScannerLogic(GenericLogic, ple_default):
             # self.slice_number=0
             self._awg.mcas_dict.stop_awgs()
             self.local_counts=[]
-            
-            self.measured_frequencies=self._wavemeterlogic._hardware_pull._parentclass._wavelength_data.copy()
+
+            self.measured_frequencies=[]
+            self.measured_frequencies=np.array(self._wavemeterlogic._hardware_pull._parentclass._wavelength_data.copy())
+            if not self._wavemeterlogic._hardware_pull._parentclass._wavelength_data == []:
+                self.measured_frequencies = np.array(list(zip(self.measured_frequencies[:,0] - self.reset_wavemeter_time,self.measured_frequencies[:,1])))
             # only emits here if no laser locking is on
             time.sleep(0.1)
             # if not self.lock_laser or (self.lock_laser and self.laser_at_position):
+            self.measurement_running = False
             print("PLE, sigScanFinished emit")
             self.sigScanFinished.emit()
             return
@@ -546,13 +573,18 @@ class LaserScannerLogic(GenericLogic, ple_default):
         if self._scan_counter_up == 0:
             # move from current voltage to start of scan range.
             self._goto_during_scan(self.scan_range[0])
+            if not self._wavemeterlogic._hardware_pull._parentclass._wavelength_data == []:
+                self.reset_wavemeter_time = self._wavemeterlogic._hardware_pull._parentclass._wavelength_data[-1][0]
+            else:
+                print("CAREFULL - WAVEMETER TRAGGING IS NOT RUNNING! YOU MIGHT HAVE TO RESTART QUDI!")
+                print("CAREFULL - WAVEMETER TRAGGING IS NOT RUNNING! YOU MIGHT HAVE TO RESTART QUDI!")
             self._wavemeterlogic._hardware_pull._parentclass._wavelength_data=[]
             
 
         if self.upwards_scan:
             # print("running seq: ", self.curr_sequence_name) # Does it affect the sequence if it is started repeatedly?
             #self._awg.mcas_dict.stop_awgs()
-            if (self.enable_PulsedRepump and not self.RepumpWhenIonized) or (self.enable_PulsedRepump and self.RepumpWhenIonized and self.ionized) or (self.enable_PulsedGreen): 
+            if (self.enable_PulsedRepump and not self.RepumpWhenIonized) or (self.enable_PulsedRepump and self.RepumpWhenIonized and self.ionized) or (self.enable_PulsedCTL) or (self.enable_Blue): 
                 # only need to setup sequence again, if repump was used before.
                 self.setup_seq(sequence_name=self.curr_sequence_name)
             self._awg.mcas_dict[self.curr_sequence_name].run()
@@ -656,11 +688,16 @@ class LaserScannerLogic(GenericLogic, ple_default):
                 QtTest.QTest.qSleep(200)
                 self.setup_repump()
                 self._awg.mcas_dict['ple_repump'].run()
-            if self.enable_PulsedGreen:
+            if self.enable_PulsedCTL:
                 self._awg.mcas_dict.stop_awgs()
                 QtTest.QTest.qSleep(200)
-                self.setup_green()
-                self._awg.mcas_dict['ple_green'].run()
+                self.setup_ctl()
+                self._awg.mcas_dict['ple_ctl'].run()
+            if self.enable_PulsedBlue:
+                self._awg.mcas_dict.stop_awgs()
+                QtTest.QTest.qSleep(200)
+                self.setup_blue()
+                self._awg.mcas_dict['ple_blue'].run()
             counts = self._scan_line(self._downwards_ramp)
             self.upwards_scan = True
             self.start_stop_timestamps=[]
@@ -683,7 +720,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
     def trace_seq(self):
         self.setup_repump()
-        self.setup_green()
+        self.setup_ctl()
+        self.setup_blue()
         hash = base64.b64encode(hashlib.sha1(self.convert_seq_params_to_string().encode()).digest())
         #Added self.queue._gated_counter.readout_duration such that the hash recognizes a change in readout duration and will update n_values in the sequence accordingly
         self.curr_sequence_name = "ple_trace_hash_{}".format(hash)
@@ -726,7 +764,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
                     A1=self.enable_A1,
                     A2=self.enable_A2,
                     repump=self.enable_Repump,
-                    CTL=self.enable_Green,
+                    CTL=self.enable_CTL,
+                    Blue=self.enable_Blue,
                     length_mus=10
                     )
         else:
@@ -735,7 +774,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
                     A2=self.enable_A2,
                     gateMW=True,
                     repump=self.enable_Repump,
-                    CTL=self.enable_Green,
+                    CTL=self.enable_CTL,
+                    Blue=self.enable_Blue,
                     length_mus=10
                     )
         
@@ -760,19 +800,33 @@ class LaserScannerLogic(GenericLogic, ple_default):
         QtTest.QTest.qSleep(200)
         self._awg.mcas_dict['ple_repump'] = seq
 
-    def setup_green(self):
+    def setup_ctl(self):
         self.adv_mode = 'SING'
-        seq = self._awg.mcas(name='ple_green', ch_dict={"2g": [1, 2], "ps": [1]}, advance_mode=self.adv_mode)
+        seq = self._awg.mcas(name='ple_ctl', ch_dict={"2g": [1, 2], "ps": [1]}, advance_mode=self.adv_mode)
 
-        seq.start_new_segment("Green", loop_count = 1, advance_mode=self.adv_mode)
-        seq.asc(CTL=self.enable_PulsedGreen, length_mus=self.GreenDuration)
+        seq.start_new_segment("CTL", loop_count = 1, advance_mode=self.adv_mode)
+        seq.asc(CTL=self.enable_PulsedCTL, length_mus=self.CTLDuration)
         
         # seq.start_new_segment("RepumpDec", advance_mode=self.adv_mode)
         # seq.asc(length_mus=self.RepumpDecay)
         
         self._awg.mcas_dict.stop_awgs()
         QtTest.QTest.qSleep(200)
-        self._awg.mcas_dict['ple_green'] = seq
+        self._awg.mcas_dict['ple_ctl'] = seq
+
+    def setup_blue(self):
+        self.adv_mode = 'SING'
+        seq = self._awg.mcas(name='ple_blue', ch_dict={"2g": [1, 2], "ps": [1]}, advance_mode=self.adv_mode)
+
+        seq.start_new_segment("Blue", loop_count = 1, advance_mode=self.adv_mode)
+        seq.asc(Blue=self.enable_PulsedBlue, length_mus=self.BlueDuration)
+        
+        # seq.start_new_segment("RepumpDec", advance_mode=self.adv_mode)
+        # seq.asc(length_mus=self.RepumpDecay)
+        
+        self._awg.mcas_dict.stop_awgs()
+        QtTest.QTest.qSleep(200)
+        self._awg.mcas_dict['ple_blue'] = seq
         
     def power_to_amp(self, power_dBm, impedance=50):
         power_dBm = np.atleast_1d(power_dBm)
@@ -933,6 +987,12 @@ class LaserScannerLogic(GenericLogic, ple_default):
                 self.start_scanning()
         self.stopped=True
         print('goto_fitted_peak done')
+        try:
+            self.curr_freq = 299792458/ self._wavemeterlogic._wavemeter_device.get_current_wavelength(kind ='vac', ch = self._wavemeterlogic._wavemeter_device.channel1) # GHz
+            self.current_freq = f"{self.curr_freq:.4f}"
+            print(f"Laser now at {self.current_freq:.4f} GHz")
+        except:
+            pass
         return 0
 
 
@@ -958,13 +1018,13 @@ class LaserScannerLogic(GenericLogic, ple_default):
             filelabel2 = tag + '_PLE_data_raw_trace'
             filelabel22 = tag + '_PLE_data_plot_trace'
             filelabel3 = tag + '_PLE_data_raw freqs vs cts'
-            filelabel4 = tag + '_PLE_data_raw freqs'
+            filelabel4 = tag + '_PLE_data_raw_freqs'
         else:
             filelabel  = 'PLE_data'
             filelabel2 = 'PLE_data_raw_trace'
             filelabel22 = 'PLE_data_plot_trace'
             filelabel3 = 'PLE_data_raw freqs vs cts'
-            filelabel4 = 'PLE_data_raw freqs'
+            filelabel4 = 'PLE_data_raw_freqs'
         
         # prepare the data in a dict or in an OrderedDict:
         data = OrderedDict()
@@ -998,6 +1058,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
         parameters['MW1 freq (MHz)'] = self.MW1_Freq
         parameters['MW2 freq (MHz)'] = self.MW2_Freq
         parameters['MW3 freq (MHz)'] = self.MW3_Freq
+        parameters['PLE voltage-factor (V to GHz)'] = self.factor_V_to_GHz
+        parameters['Current fit frequency (GHz)'] = self.curr_freq
 
 
         fig = self.draw_figure(
@@ -1057,7 +1119,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
             filepath=filepath4,
             parameters=parameters,
             filelabel=filelabel4,
-            fmt='%.6e',
+            fmt='%.15e',
             delimiter='\t',
             timestamp=timestamp
         )
@@ -1120,15 +1182,15 @@ class LaserScannerLogic(GenericLogic, ple_default):
         # Create figure
         fig, (ax_mean, ax_matrix) = plt.subplots(nrows=2, ncols=1)
 
-        ax_mean.plot(freq_data*self._scanning_device._scanner_position_ranges[3][1], count_data, linestyle=':', linewidth=0.5)
+        ax_mean.plot(freq_data*self.factor_V_to_GHz, count_data, linestyle=':', linewidth=0.5)
 
         # Do not include fit curve if there is no fit calculated.
         if max(fit_count_vals) > 0:
-            ax_mean.plot(fit_freq_vals, fit_count_vals, marker='None')
+            ax_mean.plot(fit_freq_vals*self.factor_V_to_GHz, fit_count_vals, marker='None')
 
         ax_mean.set_ylabel('Fluorescence (' + counts_prefix + 'c/s)')
         ax_mean.set_xlabel('Detuning (' + mw_prefix + 'GHz)')
-        ax_mean.set_xlim(np.min(freq_data*self._scanning_device._scanner_position_ranges[3][1]), np.max(freq_data*self._scanning_device._scanner_position_ranges[3][1]))
+        ax_mean.set_xlim(np.min(freq_data*self.factor_V_to_GHz), np.max(freq_data*self.factor_V_to_GHz))
 
         matrixplot = ax_matrix.imshow(
             matrix_data,
@@ -1237,7 +1299,6 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.Frequencies_Fit_GHz:str=''
         self.Linewidths_Fit_GHz:str=''
 
-        factor_V_to_GHz = self._scanning_device._scanner_position_ranges[3][1] 
 
         for i in range(self.NumberOfPeaks):
             try:
@@ -1246,8 +1307,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
                 self.Frequencies_Fit=self.Frequencies_Fit+Frequencies_Fit
                 Linewidths_Fit=str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"fwhm"].value,3))+"V; " #TODO convert linewidth from V to MHz
                 self.Linewidths_Fit=self.Linewidths_Fit+Linewidths_Fit #TODO convert linewidth from V to MHz
-                self.Frequencies_Fit_GHz=self.Frequencies_Fit_GHz+Frequencies_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"center"].value*factor_V_to_GHz,3))+"GHz; "
-                self.Linewidths_Fit_GHz=self.Linewidths_Fit_GHz+Linewidths_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"fwhm"].value*factor_V_to_GHz,3))+"GHz; " #TODO convert linewidth from V to MHz
+                self.Frequencies_Fit_GHz=self.Frequencies_Fit_GHz+Frequencies_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"center"].value*self.factor_V_to_GHz,3))+"GHz; "
+                self.Linewidths_Fit_GHz=self.Linewidths_Fit_GHz+Linewidths_Fit+str(round(result.params[("g"+str(i)+"_")*(self.NumberOfPeaks!=1)+"fwhm"].value*self.factor_V_to_GHz,3))+"GHz; " #TODO convert linewidth from V to MHz
             except:
                 self.log.warning('Error occured at fitting.')
 
@@ -1255,73 +1316,244 @@ class LaserScannerLogic(GenericLogic, ple_default):
         return self.interpolated_x_data,self.fit_data,result
     
     def convert_seq_params_to_string(self):
-        return str(self.MW1_Power)+str(self.MW2_Power)+str(self.MW3_Power)+str(self.MW1_Freq)+str(self.MW2_Freq)+str(self.MW3_Freq)+str(self.enable_MW1)+str(self.enable_MW2)+str(self.enable_MW3)+str(self.enable_A1)+str(self.enable_A2)+str(self.enable_Repump)+str(self.enable_PulsedRepump)+str(self.enable_Green)+str(self.enable_PulsedGreen)+str(self.lock_laser)+str(self.RepumpDuration)+str(self.RepumpDecay)+str(self.GreenDuration)+str(self.GreenDecay)
+        return str(self.MW1_Power)+str(self.MW2_Power)+str(self.MW3_Power)+str(self.MW1_Freq)+str(self.MW2_Freq)+str(self.MW3_Freq)+str(self.enable_MW1)+str(self.enable_MW2)+str(self.enable_MW3)+str(self.enable_A1)+str(self.enable_A2)+str(self.enable_Repump)+str(self.enable_PulsedRepump)+str(self.enable_CTL)+str(self.enable_PulsedCTL)+str(self.enable_Blue)+str(self.enable_PulsedBlue)+str(self.lock_laser)+str(self.RepumpDuration)+str(self.RepumpDecay)+str(self.CTLDuration)+str(self.CTLDecay)+str(self.BlueDuration)+str(self.BlueDecay)
     
 
     ### From here:
     # Take frequency data from wavemeter and extrapolate it
     # Use this extrapolated data as new x-axis for plot and fit
 
-    def find_freq_extrema(self, data, testplot=False):
-        ### Getting minima and maxima with peakfinder (for minima the plot has to be mirrored)
-        maxima = find_peaks(data - np.mean(data))[0]
-        minima = find_peaks(np.mean(data) - data)[0]
+    # def find_freq_extrema(self, data, testplot=False):
+    #     ### Getting minima and maxima with peakfinder (for minima the plot has to be mirrored)
+    #     maxima = find_peaks(data - np.mean(data))[0]
+    #     minima = find_peaks(np.mean(data) - data)[0]
 
-        ## Removing the last element of the minima since it is already related to the way back to 0 of the scan:
-        #minima = minima[: -1]
-        #minima = minima[1:]
+    #     ## Removing the last element of the minima since it is already related to the way back to 0 of the scan:
+    #     #minima = minima[: -1]
+    #     #minima = minima[1:]
 
-        ## Removing first element of maxima since first line is about to be ignored
-        maxima = maxima[1:]
+    #     ## Removing first element of maxima since first line is about to be ignored
+    #     maxima = maxima[1:]
 
-        if testplot:
-            plt.plot(data)
-            plt.plot(maxima, data[maxima], 'o')
-            plt.plot(minima, data[minima], 'o')
-            plt.show()
+    #     if testplot:
+    #         plt.plot(data)
+    #         plt.plot(maxima, data[maxima], 'o')
+    #         plt.plot(minima, data[minima], 'o')
+    #         plt.show()
 
-        return (maxima, minima)
+    #     return (maxima, minima)
     
-    def interpolate_freqlines(self, data, minima, maxima, samples):
+    # def interpolate_freqlines(self, data, minima, maxima, samples):
+    #     frequencylist = []
+    #     linelist = []
+    #     for i, max in enumerate(maxima):
+    #         y = data[minima[i]:maxima[i]]
+    #         x = np.arange(0, len(y), 1)
+    #         f = UnivariateSpline(x, y)
+    #         f.set_smoothing_factor(0.35)
+    #         freqline = f(np.linspace(0, maxima[i] - minima[i] - 1, samples))
+    #         frequencylist.append(freqline)
+
+    #         linelist.append(np.full((samples), i + 1))
+
+    #     frequencylist = np.array(frequencylist)
+    #     ## Estimating the mean frequency:
+    #     meanfreq = np.mean(frequencylist)
+    #     relativelist = (frequencylist - meanfreq) * 1e3
+
+    #     #return (relativelist, linelist, meanfreq)
+    #     return (frequencylist*1e3, linelist, meanfreq)
+    
+    # def average_freqlines(self, freqlines):
+    #     frequencymean = np.zeros_like(freqlines)
+    #     for i in freqlines:
+    #         frequencymean += i
+    #     frequencymean = frequencymean / np.shape(freqlines)[0]
+    #     return (frequencymean[0])
+        
+    # def extract_freqlines(self, extrematest=False):
+    #     maxima, minima = self.find_freq_extrema(self.measured_frequencies, extrematest)
+    #     freqlines, linelist, meanfreq = self.interpolate_freqlines(self.measured_frequencies, minima, maxima, int(self.resolution))
+    #     if np.shape(freqlines)[0] > 0:
+    #         freqmeanline = self.average_freqlines(freqlines)
+    #         self.plot_x_frequency = freqmeanline
+
+    # # def update_ProgressBar(self, scan_dur):
+    # #     print("Update ProgressBar: ", scan_dur)
+    # #     start = time.time()
+    # #     while time.time() - start < scan_dur:
+    # #         self.sigProgressBar.emit((time.time() - start)*100, scan_dur*100)
+    # #         QtTest.QTest.qSleep(200)
+    # #         #QtCore.QThread.msleep(200)
+    # #     self.sigProgressBar.emit(100, 100)
+
+    ########### for live PLE analysis with the wavemeter:   
+    
+
+    def find_freq_extrema(self, data, num):
+        """finds and returns all desired extrema of each scan
+
+        Args:
+            data (array): wavemeter scan data
+            num (int): length of applied voltage range
+
+        Raises:
+            ValueError: _description_
+            ZeroDivisionError: _description_
+
+        Returns:
+            (list,list): array of minimas and maximas
+        """
+        try:
+            ### Getting minima and maxima with peakfinder (for minima the plot has to be mirrored)
+            maxima = find_peaks(data - np.mean(data),distance=len(data)/num*0.7)[0]
+            minima = find_peaks(np.mean(data) - data,distance=len(data)/num*0.7)[0]
+            maxima0 = maxima.copy()
+            minima0 = minima.copy()
+
+            ### The maxima and minima should not differ a lot from each other, so we say thay should lay within 3 std error deviation
+            maxima = maxima[np.mean(data[maxima])-data[maxima] < np.std(data[maxima])*5]
+            minima = minima[np.mean(data[minima])-data[minima] > -np.std(data[minima])*5]
+
+            ### if we have to many minina, probably because it counted at the end another one
+            if len(minima) > num:
+                if minima[-1] >= maxima[-1]:
+                    minima = minima[:-1]
+            if len(maxima) > num:
+                ## Removing first element of maxima since first line is about to be ignored
+                if len(maxima)==len(minima)+1:
+                    maxima = maxima[1:]
+            ### if the is just one maxima missing, then its most likely the last one, as there is no clear peak
+            if len(maxima)==len(minima)-1:
+                maxima = np.append(maxima,len(data)-1)
+            ### it could be that it found the last maxima at the beginning, just fix it here
+            if len(maxima)==len(minima):
+                if minima[0] >= maxima[0]:
+                    maxima = maxima[1:]
+                    maxima = np.append(maxima,len(data)-1)
+
+            ### Error if there is an unequal amount of extrema
+            if len(maxima) != len(minima):
+                raise ValueError
+            ### Error if the amount of extrema do not match the amount of sweeps
+            elif (num < 40) & (len(maxima) != num):
+                raise ZeroDivisionError
+            ### Error if the amount of extrema do not match the amount of sweeps, but you might not care for too many scans, then ignore
+            elif (num > 40) & (len(maxima) != num):
+                print("not all peaks found, but ignored because of to many scans")
+            return (maxima, minima)
+        except ValueError:
+            print(f"min's ({len(minima)}) and max's ({len(maxima)}) have not equal lengths!")
+            return ([],[])
+        except ZeroDivisionError:
+            print("min's and max's are equal but have not the right length!")
+            print("Desired: ",num," Found: ",len(maxima))
+            return ([],[])
+    
+    def interpolate_freqlines(self, data, minima, maxima, samples, relative=False):
+        """Uses extremas to interpolate each scan individually and rescales the frequency axis
+
+        Args:
+            data (array): wavemeter scan data
+            minima (list): list of minimas
+            maxima (list): list of maximas
+            samples (int): length of applied voltage list
+            relative (bool, optional): _description_. Defaults to False.
+
+        Returns:
+            array: interpolated frequency arrays
+            float: central frequency
+        """
         frequencylist = []
         linelist = []
         for i, max in enumerate(maxima):
+            # try:
             y = data[minima[i]:maxima[i]]
             x = np.arange(0, len(y), 1)
-            f = UnivariateSpline(x, y)
-            f.set_smoothing_factor(0.35)
+            # f = CubicSpline(x, y, bc_type="clamped")
+            f = UnivariateSpline(x, y,k=5)
+            f.set_smoothing_factor(0.001)                # which smoothing factor? 0.35
             freqline = f(np.linspace(0, maxima[i] - minima[i] - 1, samples))
             frequencylist.append(freqline)
 
-            linelist.append(np.full((samples), i + 1))
+            linelist.append(np.full((samples), i + 1))  # not sure for what good for
+            # except:
+            #     pass
 
-        frequencylist = np.array(frequencylist)
+        frequencylist = np.array(frequencylist) * 1e3   # *1e3 for GHz instead of THz
         ## Estimating the mean frequency:
         meanfreq = np.mean(frequencylist)
-        relativelist = (frequencylist - meanfreq) * 1e3
+        relativelist = (frequencylist - meanfreq) 
 
-        #return (relativelist, linelist, meanfreq)
-        return (frequencylist*1e3, linelist, meanfreq)
+        if relative:
+            return (relativelist, linelist, meanfreq)
+        else:
+            return (frequencylist, linelist, meanfreq)
     
     def average_freqlines(self, freqlines):
+        """returns averaged interpolated frequency array
+
+        Args:
+            freqlines (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
         frequencymean = np.zeros_like(freqlines)
         for i in freqlines:
             frequencymean += i
         frequencymean = frequencymean / np.shape(freqlines)[0]
         return (frequencymean[0])
-        
-    def extract_freqlines(self, extrematest=False):
-        maxima, minima = self.find_freq_extrema(self.measured_frequencies, extrematest)
-        freqlines, linelist, meanfreq = self.interpolate_freqlines(self.measured_frequencies, minima, maxima, int(self.resolution))
+    
+    def extract_freqlines(self, wavemeter_data, ple_voltage, num, relative=False):
+        """finds extrema, interpolates, averages and fits the new frequency array
+
+        Args:
+            wavemeter_data (array): y data of ple logging
+            ple_voltage (array): voltage array
+            num (int): number of scans done
+            relative (bool, optional): decides if returned frequency are relative or absolute. Defaults to False.
+
+        Returns:
+            freqmeanline (array): _description_
+            freqlines (nd-array): _description_
+            meanfreq (float): _description_
+        """
+        def X1(x, a, b):
+            return a * x + b
+        res = len(ple_voltage)
+
+        maxima, minima = self.find_freq_extrema(wavemeter_data, num)
+
+        freqlines, linelist, meanfreq = self.interpolate_freqlines(wavemeter_data, minima, maxima, res, relative=relative)
+
         if np.shape(freqlines)[0] > 0:
             freqmeanline = self.average_freqlines(freqlines)
-            self.plot_x_frequency = freqmeanline
+            # global ResX4
+            # global ResX1
+            # ResX4,cov = curve_fit(X4,ple_voltage,freqmeanline)
+            ResX1,cov = curve_fit(X1,ple_voltage,freqmeanline)
+            return ResX1
+        
+    def _estimate_ratio(self):
+        print("WM Calibration fired!")
+        self.success = "Failed!"
+        # if not WAVEMETER:
+        #     self.success = "no WM found!"
+        #     pass
+        # else:            
+        res = self.extract_freqlines(self.measured_frequencies[:,1],self.plot_x,self._scan_counter_up)
+        self.factor_V_to_GHz = float(f"{res[0]:.3f}")
+        # self.F0 = res[1]
+        print(f"Calibration done! New factor_V_to_GHz value is {res[0]}")
+        self.success = "Success!"
+        if self.success == "Success!":
+            self.sigPLEfactorChanged.emit(self.factor_V_to_GHz)
+            self.plot_x_frequency=self.plot_x*self.factor_V_to_GHz
 
-    # def update_ProgressBar(self, scan_dur):
-    #     print("Update ProgressBar: ", scan_dur)
-    #     start = time.time()
-    #     while time.time() - start < scan_dur:
-    #         self.sigProgressBar.emit((time.time() - start)*100, scan_dur*100)
-    #         QtTest.QTest.qSleep(200)
-    #         #QtCore.QThread.msleep(200)
-    #     self.sigProgressBar.emit(100, 100)
+    def factor_V_to_GHz_pushButton_Clicked(self,on):
+        print('done something with factor_V_to_GHz_pushButton')
+        self._estimate_ratio()
+        QtTest.QTest.qSleep(200)
+        self.sigUpdatePlots.emit()
+

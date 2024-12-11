@@ -32,6 +32,7 @@ from qtpy import QtCore
 from qtpy import QtWidgets
 from qtpy import uic
 
+from logic.spectrum import SpectrumLogic
 
 class SpectrometerWindow(QtWidgets.QMainWindow):
 
@@ -62,7 +63,7 @@ class SpectrometerGui(GUIBase):
         """ Definition and initialisation of the GUI.
         """
 
-        self._spectrum_logic = self.spectrumlogic()
+        self._spectrum_logic:SpectrumLogic = self.spectrumlogic()
 
         # setting up the window
         self._mw = SpectrometerWindow()
@@ -70,6 +71,8 @@ class SpectrometerGui(GUIBase):
         self._mw.stop_diff_spec_Action.setEnabled(False)
         self._mw.resume_diff_spec_Action.setEnabled(False)
         self._mw.correct_background_Action.setChecked(self._spectrum_logic.background_correction)
+        self._mw.integration_time_doubleSpinBox.editingFinished.connect(self.update_integration_time)
+        self.update_integration_time()
 
         # giving the plots names allows us to link their axes together
         self._pw = self._mw.plotWidget  # pg.PlotWidget(name='Counter1')
@@ -148,6 +151,10 @@ class SpectrometerGui(GUIBase):
         self._fsd.sigFitsUpdated.disconnect()
 
         self._mw.close()
+
+    def update_integration_time(self):
+        int_time = self._mw.integration_time_doubleSpinBox.value()
+        self._spectrum_logic.update_integration_time(int_time)
 
     def show(self):
         """Make window visible and put it above all other windows.

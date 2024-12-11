@@ -11,6 +11,8 @@ from core.statusvariable import StatusVar
 
 sys.path.append('C:\src\qudi\hardware\Keysight_AWG_M8190\pyarbtools_master') #quickfix to proceed, should be improved
 
+from logic.save_logic import SaveLogic
+from hardware.Keysight_AWG_M8190.pym8190a import mcas_dict_holder
 
 #PulseStreamer is tured on in "pulsed_measurement_logic.pulse_generator_on"
 #In order to be able to stream anything, a sequence has to be uploaded beforehand.
@@ -43,7 +45,8 @@ class SetupControlLogic(GenericLogic):
     enable_A1: bool = False
     enable_A2: bool = False
     enable_Repump: bool = False
-    enable_Green: bool = False
+    enable_CTL: bool = False
+    enable_Blue: bool = False
 
     active_channels=[] # used to talk to the pulsestreamer directly
     flip_mirror=False
@@ -57,10 +60,10 @@ class SetupControlLogic(GenericLogic):
         """ Prepare logic module for work.
         """
 
-        self._awg = self.mcas_holder()
+        self._awg: mcas_dict_holder = self.mcas_holder()
         #self._powercontrol = self.powercontrol()
         #self._automized_measurement_logic = self.automizedmeasurementlogic()
-        self._save_logic = self.savelogic()
+        self._save_logic: SaveLogic = self.savelogic()
         self.flipmirror_sequence_created = False
         self.ps=self._awg.mcas_dict.awgs["ps"]
 
@@ -74,7 +77,8 @@ class SetupControlLogic(GenericLogic):
         self.enable_A1:bool=False
         self.enable_A2:bool=False
         self.enable_Repump:bool=False
-        self.enable_Green:bool=False
+        self.enable_CTL:bool=False
+        self.enable_Blue:bool=False
         self.AOM_A1_volt=0
         self.AOM_A2_volt=0
         self._awg.mcas_dict.stop_awgs()
@@ -141,7 +145,8 @@ class SetupControlLogic(GenericLogic):
         enable_A1:bool=None,
         enable_A2:bool=None,
         enable_Repump:bool=None,
-        enable_Green:bool=None,
+        enable_CTL:bool=None,
+        enable_Blue:bool=None,
 
         enable_MW1:bool=None,
         MW1_power:float=None,
@@ -167,23 +172,23 @@ class SetupControlLogic(GenericLogic):
         self._awg.mcas_dict.stop_awgs()
 
         
-        if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == False and self.enable_Repump == False and self.enable_Green == False):
+        if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == False and self.enable_Repump == False and self.enable_CTL == False and self.enable_Blue == False):
             print("Setupcontrollogic: Stopping awg")
             return
         
-        # if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == False and self.enable_Repump == True and self.enable_Green == False):
+        # if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == False and self.enable_Repump == True and self.enable_CTL == False):
         #     self._awg.mcas_dict['repump'].run()
         #     return
-        # if len(self.power)==0 and (self.enable_A1 == True and self.enable_A2 == False and self.enable_Repump == False and self.enable_Green == False):
+        # if len(self.power)==0 and (self.enable_A1 == True and self.enable_A2 == False and self.enable_Repump == False and self.enable_CTL == False):
         #     self._awg.mcas_dict['A1'].run()
         #     return
-        # if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == True and self.enable_Repump == False and self.enable_Green == False):
+        # if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == True and self.enable_Repump == False and self.enable_CTL == False):
         #     self._awg.mcas_dict['A2'].run()
         #     return
-        # if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == False and self.enable_Repump == False and self.enable_Green == True):
-        #     self._awg.mcas_dict['green'].run()
+        # if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == False and self.enable_Repump == False and self.enable_CTL == True):
+        #     self._awg.mcas_dict['CTL'].run()
         #     return
-        # if len(self.power)==0 and (self.enable_A1 == True and self.enable_A2 == True and self.enable_Repump == True and self.enable_Green == False):
+        # if len(self.power)==0 and (self.enable_A1 == True and self.enable_A2 == True and self.enable_Repump == True and self.enable_CTL == False):
         #     self._awg.mcas_dict['RepumpAndA1AndA2'].run()
         #     return
         
@@ -204,8 +209,8 @@ class SetupControlLogic(GenericLogic):
                     A1=self.enable_A1,
                     A2=self.enable_A2,
                     repump=self.enable_Repump,
-                    #green=self.enable_Green,
-                    CTL=self.enable_Green,
+                    Blue=self.enable_Blue,
+                    CTL=self.enable_CTL,
                     length_mus=50
                     )
         else:
@@ -214,8 +219,8 @@ class SetupControlLogic(GenericLogic):
                     A2=self.enable_A2,
                     gateMW=True,
                     repump=self.enable_Repump,
-                    #green=self.enable_Green,
-                    CTL=self.enable_Green,
+                    Blue=self.enable_Blue,
+                    CTL=self.enable_CTL,
                     length_mus=50
                     )
 
@@ -225,7 +230,7 @@ class SetupControlLogic(GenericLogic):
         return
     
     def write_to_pulsestreamer(self):
-        self.active_channels=list(filter(("").__ne__, ["A1"*self.enable_A1,"A2"*self.enable_A2,"CTL"*self.enable_Green,"repump"*self.enable_Repump,'FlipMirror'*self.flip_mirror]))
+        self.active_channels=list(filter(("").__ne__, ["A1"*self.enable_A1,"A2"*self.enable_A2,"CTL"*self.enable_CTL,"Blue"*self.enable_Blue,"repump"*self.enable_Repump,'FlipMirror'*self.flip_mirror]))
         #self.active_channels=list(filter(("").__ne__, [])) #This turns off all lasers when adjusting the AOM power
         self.ps.constant(pulse=(0,self.active_channels,self.AOM_A2_volt,self.AOM_A1_volt)) #Ok this is actually not the power we set but the analog input on the A2 AOM
 
@@ -255,9 +260,14 @@ class SetupControlLogic(GenericLogic):
         self.enable_Repump=on
         self.run()
 
-    def Green_Button_Clicked(self,on):
-        #print('done something with Green_Button')
-        self.enable_Green=on
+    def CTL_Button_Clicked(self,on):
+        #print('done something with CTL_Button')
+        self.enable_CTL=on
+        self.run()
+
+    def Blue_Button_Clicked(self,on):
+        #print('done something with Blue_Button')
+        self.enable_Blue=on
         self.run()
 
     def MW1_on_Button_Clicked(self,on):

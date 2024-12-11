@@ -25,7 +25,7 @@ class BiasLogic(GenericLogic):
         self.voltage_limits = [-30,15]
         self.limits_active = True
         self.amplification = 10
-        self.v_offset_correction = 0.129 
+        self.v_offset_correction = 0.115 
         self.voltages = [0,0]# [0,0.1,0.2,0.3,0.4,0.5,0.4,.3, 2., .1, 0, -.1, -.2, -.3, -.4]
         self._laser_scanner_logic.sigScanNextLine.connect(self.change_voltage)
         self.step_line = 1

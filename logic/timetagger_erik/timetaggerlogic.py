@@ -176,7 +176,7 @@ class TimeTaggerLogic(GenericLogic):
         parameters['Pulsed Duration (µs)'] = self.ODMRLogic.cw_RepumpDuration
         parameters['Pulsed Decay (µs)'] = self.ODMRLogic.cw_RepumpDecay
         parameters['CW Repump (bool)'] = self.ODMRLogic.cw_CWRepump
-        parameters['Green (bool)'] = self.ODMRLogic.enable_green
+        parameters['CTL (bool)'] = self.ODMRLogic.enable_ctl
         parameters['Seconds per Point (s)'] = self.ODMRLogic.cw_SecondsPerPoint
 
         fig = self.draw_cw_figure(data_raw['count data (counts)'],data_raw['Frequency (MHz)'],data_matrix['Frequency (MHz) + Scanline'],

@@ -250,6 +250,10 @@ class ConfocalHistoryEntry(QtCore.QObject):
                 raise OldConfigFileError()
 
 
+from hardware.national_instruments_x_series import NationalInstrumentsXSeries
+from logic.save_logic import SaveLogic
+
+
 class ConfocalLogic(GenericLogic):
     """
     This is the Logic class for confocal scanning.
@@ -258,6 +262,9 @@ class ConfocalLogic(GenericLogic):
     # declare connectors
     confocalscanner1 = Connector(interface='ConfocalScannerInterface')
     savelogic = Connector(interface='SaveLogic')
+
+    # pois
+    pois = StatusVar('pois', [])
 
     # status vars
     _clock_frequency = StatusVar('clock_frequency', 500)
@@ -312,8 +319,8 @@ class ConfocalLogic(GenericLogic):
     def on_activate(self):
         """ Initialisation performed during activation of the module.
         """
-        self._scanning_device = self.confocalscanner1()
-        self._save_logic = self.savelogic()
+        self._scanning_device: NationalInstrumentsXSeries = self.confocalscanner1()
+        self._save_logic: SaveLogic = self.savelogic()
 
         # Reads in the maximal scanning range. The unit of that scan range is micrometer!
         self.x_range = self._scanning_device.get_position_range()[0]
