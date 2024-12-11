@@ -43,6 +43,7 @@ marker_alias = {
                 #'A1':        ['ps', 1, 'A1', '3'],
                 # PS CHANNEL 4 IS CLOCK
                 'CTL':    ['ps', 1, 'CTL', '3'],
+                'Blue':    ['ps', 1, 'Blue', '1'],
                 'A2':    ['ps', 1, 'A2', '5'],
                 #'repump':    ['ps', 1, 'repump', '6'],
                 'repump':    ['ps', 1, 'repump', '7'],

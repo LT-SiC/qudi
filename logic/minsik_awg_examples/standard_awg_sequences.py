@@ -24,10 +24,10 @@ def ret_awg_seq(name, pd={}, **kwargs):
         mcas = MCAS.MultiChSeq(name=name, ch_dict={'ps': [1]})
         mcas.start_new_segment('repump')
         mcas.asc(name='repump', length_mus=320/12e3, repump=True)
-    if name == 'green':
+    if name == 'CTL':
         mcas = MCAS.MultiChSeq(name=name, ch_dict={'128m': [1]})
         mcas.start_new_segment('red')
-        mcas.asc(name='green', length_mus=320/12e3, green=True)
+        mcas.asc(name='CTL', length_mus=320/12e3, CTL=True)
     if name == 'orange':
         #mcas = MCAS.MultiChSeq(name=name, ch_dict={'2g': [1], '128m': [1]})
         mcas = MCAS.MultiChSeq(name=name, ch_dict={'128m': [1]})
@@ -76,8 +76,8 @@ def ret_awg_seq(name, pd={}, **kwargs):
                           amplitudes=amplitudes,
                           mixer_deg=kwargs['mixer_deg'])
             mcas.asc(name='compensate', length_mus=m - i*step)
-            mcas.asc(name='green', length_mus=0.01, green=True, memory=True)
-            mcas.asc(name='green', length_mus=2.99, green=True)
+            mcas.asc(name='CTL', length_mus=0.01, CTL=True, memory=True)
+            mcas.asc(name='CTL', length_mus=2.99, CTL=True)
             mcas.asc(name='wait', length_mus=0.9)
 
     if name == 'fid':
@@ -106,8 +106,8 @@ def ret_awg_seq(name, pd={}, **kwargs):
             mcas.asc(length_mus=step*i, name='_pulsed_tau_')
             pi2()
             mcas.asc(name='compensate', length_mus=m - i*step)
-            mcas.asc(name='green', length_mus=0.01, green=True)
-            mcas.asc(name='green', length_mus=2.99, green=True)
+            mcas.asc(name='CTL', length_mus=0.01, CTL=True)
+            mcas.asc(name='CTL', length_mus=2.99, CTL=True)
             mcas.asc(name='wait', length_mus=0.9)
         sna.nuclear_rabi(mcas,
                          name='flip_13c90',
@@ -122,7 +122,7 @@ def write_awg_seq(**kwargs):
     pi3d.mcas_dict[kwargs['name']] = ret_awg_seq(**kwargs)
 
 def write_awg_standards():
-    write_awg_seq(name='green')
+    write_awg_seq(name='CTL')
     write_awg_seq(name='red')
     write_awg_seq(name='orange')
  

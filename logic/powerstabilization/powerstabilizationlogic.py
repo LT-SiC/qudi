@@ -107,7 +107,7 @@ class PowerStabilizationLogic(GenericLogic, powerstabilization_default):
         self._setupcontrol_logic._awg.mcas_dict.stop_awgs()
         QtTest.QTest.qSleep(1000)
         # self._setupcontrol_logic._awg.mcas_dict["A2"].run() # TODO: doesnt turn on laser yet. Why?
-        self._setupcontrol_logic.enable_Green = True
+        self._setupcontrol_logic.enable_CTL = True
         self._setupcontrol_logic.run() 
         QtTest.QTest.qSleep(1000)
 

@@ -39,7 +39,8 @@ class SetupControlLogic(GenericLogic):
     enable_A1:bool=False
     enable_A2:bool=False
     enable_Repump:bool=False
-    enable_Green:bool=False
+    enable_CTL:bool=False
+    enable_Blue:bool=False
 
     SigReadPower= QtCore.Signal()
 
@@ -76,7 +77,8 @@ class SetupControlLogic(GenericLogic):
         enable_A1:bool=None,
         enable_A2:bool=None,
         enable_Repump:bool=None,
-        enable_Green:bool=None,
+        enable_CTL:bool=None,
+        enable_Blue:bool=None,
 
         enable_MW1:bool=None,
         MW1_power:float=None,
@@ -102,7 +104,7 @@ class SetupControlLogic(GenericLogic):
         self._awg.mcas_dict.stop_awgs()
 
         
-        if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == False and self.enable_Repump == False and self.enable_Green == False):
+        if len(self.power)==0 and (self.enable_A1 == False and self.enable_A2 == False and self.enable_Repump == False and self.enable_CTL == False and self.enable_Blue == False):
             print("Stoping awg")
             return
 
@@ -122,7 +124,8 @@ class SetupControlLogic(GenericLogic):
                     A1=self.enable_A1,
                     A2=self.enable_A2,
                     repump=self.enable_Repump,
-                    green=self.enable_Green,
+                    CTL=self.enable_CTL,
+                    Blue=self.enable_Blue,
                     length_mus=200
                     )
         else:
@@ -130,7 +133,8 @@ class SetupControlLogic(GenericLogic):
                     A1=self.enable_A1,
                     A2=self.enable_A2,
                     repump=self.enable_Repump,
-                    green=self.enable_Green,
+                    CTL=self.enable_CTL,
+                    Blue=self.enable_Blue,
                     length_mus=500
                     )
 
@@ -153,9 +157,14 @@ class SetupControlLogic(GenericLogic):
         self.enable_Repump=on
         self.setup_seq()
 
-    def Green_Button_Clicked(self,on):
-        #print('done something with Green_Button')
-        self.enable_Green=on
+    def CTL_Button_Clicked(self,on):
+        #print('done something with CTL_Button')
+        self.enable_CTL=on
+        self.setup_seq()
+
+    def Blue_Button_Clicked(self,on):
+        #print('done something with Blue_Button')
+        self.enable_Blue=on
         self.setup_seq()
 
     def MW1_on_Button_Clicked(self,on):

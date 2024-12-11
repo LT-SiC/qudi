@@ -58,7 +58,7 @@ class RabiGUI(GUIBase,rabi_default_functions):
     # sigA1 = QtCore.Signal(bool)
     # sigA2 = QtCore.Signal(bool)
     # sigRepump = QtCore.Signal(bool)
-    # sigGreen = QtCore.Signal(bool)
+    # sigCTL = QtCore.Signal(bool)
     # sigMW1ON = QtCore.Signal(bool)
     # sigMW2ON = QtCore.Signal(bool)
     # sigMW3ON = QtCore.Signal(bool)

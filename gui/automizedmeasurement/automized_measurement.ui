@@ -123,7 +123,7 @@
       <item row="10" column="0">
        <widget class="QLineEdit" name="SaveFolder_lineEdit">
         <property name="text">
-         <string>C:/Data/2022</string>
+         <string>E:\data_newPC\2024</string>
         </property>
        </widget>
       </item>

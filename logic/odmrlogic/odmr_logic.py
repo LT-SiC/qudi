@@ -163,7 +163,7 @@ class ODMRLogic_holder(GenericLogic):
         parameters['Pulsed Duration (µs)'] = self.ODMRLogic.cw_RepumpDuration
         parameters['Pulsed Decay (µs)'] = self.ODMRLogic.cw_RepumpDecay
         parameters['CW Repump (bool)'] = self.ODMRLogic.cw_CWRepump
-        parameters['Green (bool)'] = self.ODMRLogic.enable_green
+        parameters['CTL (bool)'] = self.ODMRLogic.enable_CTL
         parameters['Seconds per Point (s)'] = self.ODMRLogic.cw_SecondsPerPoint
         parameters['Contrast'] = self.Contrast_Fit
         parameters['Frequencies (MHz)'] = self.Frequencies_Fit
@@ -748,7 +748,7 @@ class ODMRLogic(cw_default):
         cw_RepumpDuration = None, 
         cw_RepumpDecay = None, 
         cw_CWRepump=None,
-        enable_green=False,
+        enable_CTL=False,
         cw_SecondsPerPoint=None,
         cw_segment_length = None
         ):
@@ -855,7 +855,7 @@ class ODMRLogic(cw_default):
                 A2=self.cw_A2,
                 gateMW=True,
                 repump=self.cw_CWRepump,
-                green=enable_green,
+                CTL=enable_CTL,
                 gate = False,
                 length_mus=E.round_length_mus_to_x_multiple_ps(50)
                 )  
@@ -867,7 +867,7 @@ class ODMRLogic(cw_default):
                 A2=self.cw_A2,
                 gateMW=True,
                 repump=self.cw_CWRepump,
-                green=enable_green,
+                CTL=enable_CTL,
                 gate = False,
                 memory=True,
                 )  
@@ -878,7 +878,7 @@ class ODMRLogic(cw_default):
             A2=self.cw_A2,
             gateMW=True,
             repump=self.cw_CWRepump,
-            green=enable_green,
+            CTL=enable_CTL,
             gate = False,
             memory = False,
             length_mus=E.round_length_mus_to_x_multiple_ps(50)
@@ -993,7 +993,7 @@ class pulsedODMRLogic(pulsed_default):
         pulsed_RepumpDuration = None, 
         pulsed_RepumpDecay = None, 
         pulsed_CWRepump=None,
-        enable_green=False,
+        enable_CTL=False,
         pulsed_AOMDelay = None,
         pulsed_InitTime = None,
         pulsed_DecayInit = None,

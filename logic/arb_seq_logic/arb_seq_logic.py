@@ -57,8 +57,8 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
     arbseq_DecayInit = StatusVar(default=1000) #rep
     arbseq_RepumpDecay = StatusVar(default=1000) #rep
     arbseq_RepumpDuration = StatusVar(default=50) #ms
-    arbseq_GreenDecay = StatusVar(default=1000) #rep
-    arbseq_GreenDuration = StatusVar(default=50) #ms
+    arbseq_CTLDecay = StatusVar(default=1000) #rep
+    arbseq_CTLDuration = StatusVar(default=50) #ms
     arbseq_AOMDelay = StatusVar(default=100) #ms
     arbseq_ReadoutTime = StatusVar(default=100) #ms
     arbseq_ReadoutDecay = StatusVar(default=1000) #rep

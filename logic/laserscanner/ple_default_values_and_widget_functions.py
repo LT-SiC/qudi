@@ -6,9 +6,14 @@ class ple_default_values_and_widget_functions:
         _lock_laser:bool=False
         RepumpDuration:float = 10
         RepumpDecay:float = 1000
-        GreenDuration:float = 10
-        GreenDecay:float = 1000
+        CTLDuration:float = 10
+        CTLDecay:float = 1000
+        BlueDuration:float = 10
+        BlueDecay:float = 1000
 
+        current_freq:str = ''
+        factor_V_to_GHz:float = 1
+        plot_x:float = 1
         
         stoptime:float = 0
         PerformFit:bool = False
@@ -27,12 +32,18 @@ class ple_default_values_and_widget_functions:
 
         def ple_Load_Button_Clicked(self,on):
                 print('done something with ple_Load_Button')
+        
+        def factor_V_to_GHz_pushButton_Clicked(self,on):
+                print('done something with factor_V_to_GHz_pushButton')
 
         def ple_PulsedRepump_CheckBox_StateChanged(self,value):
                 self.enable_PulsedRepump=value==2
 
-        def ple_PulsedGreen_CheckBox_StateChanged(self,value):
-                self.enable_PulsedGreen=value==2
+        def ple_PulsedCTL_CheckBox_StateChanged(self,value):
+                self.enable_PulsedCTL=value==2
+
+        def ple_PulsedBlue_CheckBox_StateChanged(self,value):
+                self.enable_PulsedBlue=value==2
 
         def ple_RepumpWhenIonized_CheckBox_StateChanged(self,value):
                 self.RepumpWhenIonized=value==2
@@ -67,9 +78,15 @@ class ple_default_values_and_widget_functions:
                 except:
                         pass
 
-        def ple_GreenDuration_LineEdit_textEdited(self,text):
+        def ple_CTLDuration_LineEdit_textEdited(self,text):
                 try:
-                        self.GreenDuration=float(text.replace(",","."))
+                        self.CTLDuration=float(text.replace(",","."))
+                except:
+                        pass
+
+        def ple_BlueDuration_LineEdit_textEdited(self,text):
+                try:
+                        self.BlueDuration=float(text.replace(",","."))
                 except:
                         pass
         
@@ -136,8 +153,11 @@ class ple_default_values_and_widget_functions:
         def ple_CWrepump_CheckBox_StateChanged(self,value):
                 self.enable_Repump=value==2
 
-        def ple_CWGreen_CheckBox_StateChanged(self,value):
-                self.enable_Green=value==2
+        def ple_CWCTL_CheckBox_StateChanged(self,value):
+                self.enable_CTL=value==2
+
+        def ple_CWBlue_CheckBox_StateChanged(self,value):
+                self.enable_Blue=value==2
 
         def ple_PerformFit_CheckBox_StateChanged(self,value):
                 self.PerformFit=value==2
@@ -153,6 +173,13 @@ class ple_default_values_and_widget_functions:
         def ple_Stoptime_LineEdit_textEdited(self,text):
                 try:
                         self.stoptime=float(text.replace(",","."))
+                except:
+                        pass
+
+        def factor_V_to_GHz_LineEdit_textEdited(self,text):
+                try:
+                        self.factor_V_to_GHz=float(text.replace(",","."))
+                        self.plot_x_frequency=self.plot_x*self.factor_V_to_GHz
                 except:
                         pass
 
