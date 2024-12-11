@@ -43,6 +43,10 @@ from qtpy import QtWidgets
 from qtpy import uic
 
 
+from logic.save_logic import SaveLogic
+from logic.confocal_logic import ConfocalLogic
+
+
 class ConfocalMainWindow(QtWidgets.QMainWindow):
     """ Create the Mainwindow based on the corresponding *.ui file. """
 
@@ -180,6 +184,40 @@ class SaveDialog(QtWidgets.QDialog):
             self.sigSaveXYplot.emit(self.dir_path, info_params)
         elif self.axis == "Z":
             self.sigSaveZplot.emit(self.dir_path, info_params)
+
+class LoadDialog(QtWidgets.QDialog):
+    """ Dialog to load data """
+    save_path = ""
+    sigLoadXYplot = QtCore.Signal(str)
+    sigLoadPoi = QtCore.Signal(str)
+    def __init__(self, parent, title="Set loading params", text="Loading..."):
+        super().__init__(parent)
+        this_dir = os.path.dirname(__file__)
+        ui_file = os.path.join(this_dir, 'ui_load.ui')
+        uic.loadUi(ui_file, self)
+    
+        self.setWindowTitle(title)
+        self.setWindowModality(QtCore.Qt.WindowModal)
+        self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating)
+        self.load_toolButton.clicked.connect(self.choose_folder_for_load)
+        
+        self.accepted.connect(self.load)    
+
+        # self.rejected.connect()
+
+    
+    def choose_folder_for_load(self):
+        self.file_path = QtWidgets.QFileDialog.getOpenFileName()[0]
+        # printdebug(self.debug, f'Chosen filepath is {dir_path}')
+        self.load_path_lineEdit.setText(self.file_path)
+        return self.file_path
+   
+   
+    def load(self):
+        if self.axis == "XY":
+            self.sigLoadXYplot.emit(self.file_path)
+        elif self.axis == "POI":
+            self.sigLoadPoi.emit(self.file_path)
         
             
     
@@ -223,10 +261,10 @@ class ConfocalGui(GUIBase):
         """
 
         # Getting an access to all connectors:
-        self._scanning_logic = self.confocallogic1()
-        self._save_logic = self.savelogic()
+        self._scanning_logic:ConfocalLogic = self.confocallogic1()
+        self._save_logic:SaveLogic = self.savelogic()
         self._optimizer_logic = self.optimizerlogic1()
-        self._scanning_logic.pois = np.array([])
+        # self._scanning_logic.pois = np.array([])
         #self._automized_measurement_logic = self.automizedmeasurementlogic()
         # connecting signals from logic
         self._scanning_logic.sigLimitsChanged.connect(self.limits_changed)
@@ -242,6 +280,9 @@ class ConfocalGui(GUIBase):
         self._save_dialog = SaveDialog(self._mw)
         self._save_dialog.sigSaveXYplot.connect(self.save_xy_scan_data_plot)
         self._save_dialog.sigSaveZplot.connect(self.save_depth_scan_data_plot)
+        self._load_dialog = LoadDialog(self._mw)
+        self._load_dialog.sigLoadXYplot.connect(self.load_xy_scan_data)
+        self._load_dialog.sigLoadPoi.connect(self.load_poi_list)
         self.debug = True
 
     def initMainUI(self):
@@ -623,6 +664,8 @@ class ConfocalGui(GUIBase):
         self._mw.action_optimizer_settings.triggered.connect(self.menu_optimizer_settings)
         self._mw.actionSave_XY_Scan.triggered.connect(self.save_xy)
         self._mw.actionSave_Depth_Scan.triggered.connect(self.save_z)
+        self._mw.actionLoad_Confocal.triggered.connect(self.load_xy)
+        self._mw.actionLoad_POIs.triggered.connect(self.load_poi)
         # self._mw.actionSave_Depth_Scan.triggered.connect(self.save_depth_scan_data)
 
         # Configure and connect the zoom actions with the desired buttons and
@@ -1815,6 +1858,33 @@ class ConfocalGui(GUIBase):
 
         self._save_dialog.show()
 
+    def load_xy(self, path = None):
+        """ Run the save routine from the logic to save the xy confocal data."""
+        #printdebug(self.debug, 'confocalgui: save_xy_scan_data called')
+        self._load_dialog.axis = "XY"
+
+        self._load_dialog.show()
+
+    def load_poi(self, path = None):
+        """ Run the save routine from the logic to save the xy confocal data."""
+        #printdebug(self.debug, 'confocalgui: save_xy_scan_data called')
+        self._load_dialog.axis = "POI"
+
+        self._load_dialog.show()
+
+    def load_xy_scan_data(self, file):
+        try:
+            xy_data = np.loadtxt(file, comments='#')
+            self._scanning_logic.xy_image[:,:,3] = xy_data
+            self._scanning_logic.signal_xy_image_updated.emit()
+        except:
+            print("Error in load xy scan! You might have to adjust the current confocal size/resolution onto the the values of required file (It just updates countdata not scan area)!")
+
+    def load_poi_list(self, file):
+        try:
+            self._scanning_logic.pois=np.loadtxt(file)
+        except:
+            print("Error in load pois!")
 
     def save_xy_scan_image(self):
         """ Save the image and according to that the data.

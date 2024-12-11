@@ -39,6 +39,8 @@
     <addaction name="separator"/>
     <addaction name="actionClose"/>
     <addaction name="separator"/>
+    <addaction name="actionLoad_Confocal"/>
+    <addaction name="actionLoad_POIs"/>
    </widget>
    <widget class="QMenu" name="menu_Options">
     <property name="title">
@@ -2403,7 +2405,7 @@
    </property>
    <property name="icon">
     <iconset>
-     <normaloff>C:/Users/YY3/Downloads/cross_hair.png</normaloff>C:/Users/YY3/Downloads/cross_hair.png</iconset>
+     <normaloff>../../../../Users/YY3/Downloads/cross_hair.png</normaloff>../../../../Users/YY3/Downloads/cross_hair.png</iconset>
    </property>
    <property name="text">
     <string>Set POIs</string>
@@ -2415,6 +2417,24 @@
   <action name="actionchoose_folder">
    <property name="text">
     <string>Choose folder</string>
+   </property>
+  </action>
+  <action name="actionLoad_Confocal">
+   <property name="icon">
+    <iconset>
+     <normaloff>../../artwork/icons/oxygen/22x22/document-open.png</normaloff>../../artwork/icons/oxygen/22x22/document-open.png</iconset>
+   </property>
+   <property name="text">
+    <string>Load Confocal</string>
+   </property>
+  </action>
+  <action name="actionLoad_POIs">
+   <property name="icon">
+    <iconset>
+     <normaloff>../../artwork/icons/oxygen/22x22/document-open.png</normaloff>../../artwork/icons/oxygen/22x22/document-open.png</iconset>
+   </property>
+   <property name="text">
+    <string>Load POIs</string>
    </property>
   </action>
  </widget>

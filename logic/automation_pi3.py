@@ -68,16 +68,20 @@ class AutomatedMeasurementLogic(GenericLogic):
     SigLoop = QtCore.Signal()
 
     abort = False
+    measurementStarted = False
+    get_save_pdf = False
+    get_save_png = True
+    _current_poi_name = ""
     #steps_bg = ['move', 'spectrum', 'spectrum']
     #steps = ['move', 'optimize', 'ple']
     steps_bg = []
 
     
-    _laser_power_A1_list=[5,10,15,20,25]
-    _laser_power_A2_list=[5,10,15,20,25]
+    _laser_power_A1_list=[5]
+    _laser_power_A2_list=[5]
     
     # _bias_voltages=list(np.round(np.arange(-1.5,0.2+0.1,0.1),1))    #V
-    _bias_voltages=[2.8,2.9,3,3.1,3.2]    #V
+    _bias_voltages=[0]    #V
     # _bias_voltages=list(np.round(np.sort(list(np.arange(-1.5,0.26,0.05))*2),2))    #V
     
     _ctl_wavelengths=list([895])  #nm
@@ -88,11 +92,15 @@ class AutomatedMeasurementLogic(GenericLogic):
     _cobolt_powers=list([30])
     _cobolt_power_min=0.1
     _cobolt_power_max=30
+    start_pause_time = 2.75
+    end_pause_time = 6.1
 
     _MW_power_list=list(np.arange(-30,-16,1))*len(_laser_power_A1_list)
     
     #steps= ['resonant_optimize', 'next_laser_power_A1', 'ple']*len(_laser_power_A1_list)
     #steps= ['move', 'optimize', 'spectrum', 'spectrum']
+    steps = ['move', 'pure_spectrum','pure_spectrum']
+    # steps_bg = ['move','pure_spectrum','pure_spectrum']
 
     # steps= (['nextV','ple_refocus']+['change_wavelength','arbseq']*len(_ctl_wavelengths)+['resetCTL'])*len(_bias_voltages)
     # steps= ['move']+['CTL_OFF','change_wavelength','ple_refocus', 'resonant_optimize','CTL_ON','arbseq']*len(_ctl_wavelengths)  #arbseq with res. confocal while CTL off
@@ -101,9 +109,10 @@ class AutomatedMeasurementLogic(GenericLogic):
 
     #find PLEs on different spots and apply voltage sweep
     # steps = ['move','optimize',"ple"]
+    # steps = ['move',"ple"]
 
     #check dark count rate for different voltages:
-    steps = ["ple","arbseq"]*10
+    # steps = ["ple","arbseq"]*10
     
     # steps = ["move","optimize"]+(["change_wavelength","resetBias"]+['nextV','ple_refocus','arbseq']*len(_bias_voltages))*len(_ctl_wavelengths)
     # steps = ['move','resetBias','setCoboltmax','optimize','ple_refocus','setCoboltmin','resonant_optimize']+['nextV','ple_refocus']*len(_bias_voltages)
@@ -124,6 +133,7 @@ class AutomatedMeasurementLogic(GenericLogic):
             'optimize' : self.optimize_on_poi,
             'resonant_optimize' : self.resonant_optimize_on_poi,
             'spectrum' : self.take_spectrum,
+            'pure_spectrum' : self.take_spectrum_pure,
             'ple' : self.take_PLE,
             'ple_refocus' : self.refocus_PLE,
             'arbseq' : self.start_arbseq,
@@ -143,6 +153,7 @@ class AutomatedMeasurementLogic(GenericLogic):
             'setCoboltP': self.setCoboltPower,
             'V_trace_record': self.V_trace_record,
         }
+        
         
        
     def on_activate(self):
@@ -189,7 +200,7 @@ class AutomatedMeasurementLogic(GenericLogic):
         self.n_vals = 300
         self.tag_for_saving = '' # mark the file name if the autofocus was not successfully found
         
-        self._spectrum_logic.update_integration_time(20)
+        self._spectrum_logic.update_integration_time(40)
         self.measurementStarted = False
 
         # save  current save options
@@ -213,28 +224,28 @@ class AutomatedMeasurementLogic(GenericLogic):
     def run_repump(self):
         self._setupcontrol_logic.enable_A1 = False
         self._setupcontrol_logic.enable_A2 = False
-        self._setupcontrol_logic.enable_Green = False
+        self._setupcontrol_logic.enable_CTL = False
         self._setupcontrol_logic.enable_Repump = True
         self._setupcontrol_logic.run()
 
     def run_repumpA1A2(self):
         self._setupcontrol_logic.enable_A1 = True
         self._setupcontrol_logic.enable_A2 = True
-        self._setupcontrol_logic.enable_Green = False
+        self._setupcontrol_logic.enable_CTL = False
         self._setupcontrol_logic.enable_Repump = True
         self._setupcontrol_logic.run()
         
     def run_A1(self):
         self._setupcontrol_logic.enable_A1 = True
         self._setupcontrol_logic.enable_A2 = False
-        self._setupcontrol_logic.enable_Green = False
+        self._setupcontrol_logic.enable_CTL = False
         self._setupcontrol_logic.enable_Repump = False
         self._setupcontrol_logic.run()
 
     def run_A2(self):
         self._setupcontrol_logic.enable_A1 = False
         self._setupcontrol_logic.enable_A2 = True
-        self._setupcontrol_logic.enable_Green = False
+        self._setupcontrol_logic.enable_CTL = False
         self._setupcontrol_logic.enable_Repump = False
         self._setupcontrol_logic.run()
 
@@ -285,7 +296,7 @@ class AutomatedMeasurementLogic(GenericLogic):
                 self._spectrum_logic._spectrometer_device.on_activate()
                 # overwrite save options. Only txt should be saved.
                 self._spectrum_logic._save_logic.save_pdf = False
-                self._spectrum_logic._save_logic.save_png = False
+                self._spectrum_logic._save_logic.save_png = True
             except:
                 print("No unopended device found.")
 
@@ -439,6 +450,7 @@ class AutomatedMeasurementLogic(GenericLogic):
         # script will move to next line once position is reached
 
         self._scanner_logic.go_to_position('scanner', x=poi_position[0],y=poi_position[1],z=poi_position[2], rs=rs)
+        QtTest.QTest.qSleep(2000)
         self.current_poi_position = poi_position
         # no signal is emitted once position is reached. 
         # We need to send one by ourself to keep consistency with the rest of the script.
@@ -500,13 +512,28 @@ class AutomatedMeasurementLogic(GenericLogic):
         print(later)
         self.flip_spectrometermirror()
         return
+    
+    def take_spectrum_pure(self):
+        """Tells spectrumlogic to start taking a spectrum.
+        THis only takes spectrum without flipping any mirror, checking counts or doing some refocus!
+        """
+        print("STARTED TAKING SPECTRUM")
+        now = time.time()
+        self._spectrum_logic.get_single_spectrum()
+        later = time.time()-now
+        print("ENDED TAKING SPECTRUM")
+        print(later)
+        return
 
     def take_PLE(self):
         self._laser_scanner_logic.start_scanning()
-        while not self._laser_scanner_logic.laser_at_position:
+        QtTest.QTest.qSleep(250)
+        while self._laser_scanner_logic.measurement_running:
             QtTest.QTest.qSleep(250)
         if self.measurementStarted == True:
-            self._laser_scanner_logic.save_data(tag=str(self._current_laser_power_A1))
+            filename = self._laser_scanner_logic.Filename
+            s = filename#+"-"+str(self._current_laser_power_A1)
+            self._laser_scanner_logic.save_data(tag=s)
         self.sigNextStep.emit()
         return 0
     
@@ -695,9 +722,11 @@ class AutomatedMeasurementLogic(GenericLogic):
 
     @QtCore.Slot()
     def save_spectrum(self):
-        
+        print("saving spectrum for current poi: ",str(self._current_poi_name))
+        poi = str(self._current_poi_name)
         # save data
-        self._spectrum_logic.save_spectrum_data(filepath=self.save_folder, name_tag = self._current_poi_name + '_850LP_inttime_' + str(self._spectrum_logic.integration_time) + self.tag_for_saving)
+        self._spectrum_logic.save_spectrum_data(filepath=self.save_folder, name_tag = poi + '_850LP_inttime_' + str(self._spectrum_logic.integration_time) + self.tag_for_saving)
+        print("saving spectrum for current poi after: ",str(self._current_poi_name))
 
         if self._current_poi_name == '1':
             # only takes the signal of first recorded POI (background), not the wavelength. Will be substracted from other spectra to determine if V2 is present

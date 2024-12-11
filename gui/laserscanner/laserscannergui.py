@@ -53,6 +53,38 @@ class VoltScanMainWindow(QtWidgets.QMainWindow):
         self.show()
 
 
+class LoadDialog(QtWidgets.QDialog):
+    """ Dialog to load data """
+    save_path = ""
+    sigLoadPLE = QtCore.Signal(str)
+    def __init__(self, parent, title="Select all PLE .dat files", text="Loading..."):
+        super().__init__(parent)
+        this_dir = os.path.dirname(__file__)
+        ui_file = os.path.join(this_dir, 'ui_load.ui')
+        uic.loadUi(ui_file, self)
+    
+        self.setWindowTitle(title)
+        self.setWindowModality(QtCore.Qt.WindowModal)
+        self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating)
+        self.load_toolButton.clicked.connect(self.choose_folder_for_load)
+        
+        self.accepted.connect(self.load)    
+
+        # self.rejected.connect()
+
+    
+    def choose_folder_for_load(self):
+        self.file_path = QtWidgets.QFileDialog.getOpenFileNames()[0]
+        # printdebug(self.debug, f'Chosen filepath is {dir_path}')
+        self.load_path_lineEdit.setText(self.file_path)
+        return self.file_path
+   
+   
+    def load(self):
+        self.sigLoadPLE.emit(self.file_path)
+
+
+
 class VoltScanGui(GUIBase, ple_default_functions):
    
     # declare connectors
@@ -189,6 +221,7 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self._voltscan_logic.sigScanStarted.connect(self.scan_started)
         self._voltscan_logic.sigScanRangeAdjustment.connect(self.update_scan_range_ComboBox)
         self._voltscan_logic.sigScanRangeChanged.connect(self.update_scan_range_DoubleSpinBox)
+        self._voltscan_logic.sigPLEfactorChanged.connect(self.update_factor_V_to_GHz_LineEdit)
         self._voltscan_logic.sigLockLaserChanged.connect(self.update_ple_Lock_Laser_CheckBox)
         #self._voltscan_logic.sigProgressBar.connect(self.update_ProgressBar)
 
@@ -201,6 +234,10 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self.sigChangeMaxLines.connect(self._voltscan_logic.set_scan_lines)
         self.sigChangeResolution.connect(self._voltscan_logic.set_resolution)
         self.sigSaveMeasurement.connect(self._voltscan_logic.save_data)
+
+        ### for loading
+        self._load_dialog = LoadDialog(self._mw)
+        self._load_dialog.sigLoadPLE.connect(self.load_ple_data)
 
         # Set up ScanRange combobox
         scan_ranges = ['Single Peak', 'Double Peak', 'Selected Range']
@@ -239,6 +276,9 @@ class VoltScanGui(GUIBase, ple_default_functions):
 
     def scan_started(self):
         self.disable_scan_actions()
+        self._voltscan_logic.curr_freq = 0.0
+        self._voltscan_logic.current_freq = ''
+        self.refresh_current_freq()
 
     def scan_stopped(self):
         self.enable_scan_actions()
@@ -250,7 +290,46 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self.refresh_lines()
         if self._voltscan_logic.lock_laser:
             self._voltscan_logic.PerformFit = perform_fit
+        self.refresh_current_freq()
+
+
+    # for laoding
+    def load_ple_data(self, files):
+        success = True
+        try:
+            f1 = [f for f in files if f.endswith("data.dat")][0]
+        except IndexError:
+            print("Missing '_data.dat' file!")
+            success = False
+        try:
+            f2 = [f for f in files if f.endswith("raw_freqs.dat")][0]
+        except IndexError:
+            print("Missing '_raw_freqs.dat' file!")
+            success = False
+        try:
+            f3 = [f for f in files if f.endswith("raw_trace.dat")][0]
+        except IndexError:
+            print("Missing '_raw_trace.dat' file!")
+            success = False
         
+        if success:
+            print("Files are here! Now try laoding...")
+            self._voltscan_logic.sigUpdatePlots.emit()
+            pass
+        else:
+            print("Loading failed!")
+        # try:
+        #     xy_data = np.loadtxt(file, comments='#')
+        #     self._scanning_logic.xy_image[:,:,3] = xy_data
+        #     self._scanning_logic.signal_xy_image_updated.emit()
+        # except:
+        #     print("Error in load xy scan! You might have to adjust the current confocal size/resolution onto the the values of required file (It just updates countdata not scan area)!")
+
+
+        
+    def refresh_current_freq(self):
+        self._mw.current_freq_Label.setText(str(self._voltscan_logic.current_freq))
+
     def refresh_plot(self):
         """ Refresh the xy-plot image """
         self.scan_image.setData(self._voltscan_logic.plot_x_frequency, self._voltscan_logic.plot_y)
@@ -264,7 +343,7 @@ class VoltScanGui(GUIBase, ple_default_functions):
                 self._mw.ple_Frequencies_Fit_Label.setText(self._voltscan_logic.Frequencies_Fit_GHz)
                 self._mw.ple_Linewidths_Fit_Label.setText(self._voltscan_logic.Linewidths_Fit_GHz)
 
-                self.scan_fit_image.setData(interpolated_x_data*self._voltscan_logic._scanning_device._scanner_position_ranges[3][1] , fit_data) # 0.22 if FeedForward in turned on
+                self.scan_fit_image.setData(interpolated_x_data*self._voltscan_logic.factor_V_to_GHz , fit_data) # 0.22 if FeedForward in turned on
             except:
                 self.log.warning('Gaussian fit not successful...')
 
@@ -388,6 +467,9 @@ class VoltScanGui(GUIBase, ple_default_functions):
     def update_scan_range_DoubleSpinBox(self, value_min, value_max):
         self._mw.startDoubleSpinBox.setValue(value_min)
         self._mw.stopDoubleSpinBox.setValue(value_max)
+
+    def update_factor_V_to_GHz_LineEdit(self, value):
+        self._mw.factor_V_to_GHz_LineEdit.setText(str(value))
     
     def update_ple_Lock_Laser_CheckBox(self, val):
         self._mw.ple_Lock_Laser_CheckBox.setChecked(val)
@@ -403,9 +485,11 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self._mw.ple_Stop_Button.setEnabled(True)
         self._mw.ple_Continue_Button.setEnabled(False)
         self._mw.ple_Load_Button.setEnabled(False)
+        self._mw.factor_V_to_GHz_pushButton.setEnabled(False)
     
     def enable_scan_actions(self):
         self._mw.ple_Run_Button.setEnabled(True)
         self._mw.ple_Stop_Button.setEnabled(False)
         self._mw.ple_Continue_Button.setEnabled(True)
         self._mw.ple_Load_Button.setEnabled(True)
+        self._mw.factor_V_to_GHz_pushButton.setEnabled(True)
