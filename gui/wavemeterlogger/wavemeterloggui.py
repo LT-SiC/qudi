@@ -36,6 +36,8 @@ from qtpy import QtWidgets
 from qtpy import QtCore
 from qtpy import uic
 
+from logic.wavemeter_logger_logic import WavemeterLoggerLogic
+
 
 class WavemeterLogWindow(QtWidgets.QMainWindow):
     def __init__(self):

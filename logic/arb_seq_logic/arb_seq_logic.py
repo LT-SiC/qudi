@@ -617,9 +617,9 @@ class ArbSeqLogic(GenericLogic,arb_seq_default):
             seq.start_new_segment("Ionization", loop_count=int(self.arbseq_Tau_Decay))
             if self.arbseq_MW2:
                 seq.asc(name='AddCTL', pd2g1={"type": "sine", "frequencies": [self.arbseq_MW2_Freq],"amplitudes": self.power_to_amp(self.arbseq_MW2_Power)}, 
-                                        length_mus=tau, A2=self.arbseq_A2, A1=self.arbseq_A1, CTL=self.arbseq_CWRepump,repump=self.arbseq_PulsedRepump)
+                                        length_mus=tau, A2=self.arbseq_A2, A1=self.arbseq_A1, CTL=self.arbseq_CWRepump,repump=self.arbseq_PulsedRepump,Blue=self.arbseq_MW1)
             else:
-                seq.asc(name='AddCTL', length_mus=tau, A2=self.arbseq_A2, A1=self.arbseq_A1, CTL=self.arbseq_CWRepump,repump=self.arbseq_PulsedRepump)
+                seq.asc(name='AddCTL', length_mus=tau, A2=self.arbseq_A2, A1=self.arbseq_A1, CTL=self.arbseq_CWRepump,repump=self.arbseq_PulsedRepump,Blue=self.arbseq_MW1)
             
             seq.start_new_segment("Readout", loop_count=int(self.arbseq_ReadoutDecay))
             if self.arbseq_MW3:

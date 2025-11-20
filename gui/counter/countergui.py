@@ -31,7 +31,7 @@ from qtpy import QtCore
 from qtpy import QtWidgets
 from qtpy import uic
 
-
+from logic.counter_logic import CounterLogic
 
 class CounterMainWindow(QtWidgets.QMainWindow):
 
@@ -64,7 +64,7 @@ class CounterGui(GUIBase):
     def on_activate(self):
         """ Definition and initialisation of the GUI.
         """
-        self._counting_logic = self.counterlogic1()
+        self._counting_logic:CounterLogic = self.counterlogic1()
 
         #####################
         # Configuring the dock widgets
@@ -164,6 +164,8 @@ class CounterGui(GUIBase):
         self._mw.trace_2_radiobutton.released.connect(self.trace_display_changed)
         self._mw.trace_3_radiobutton.released.connect(self.trace_display_changed)
         self._mw.trace_4_radiobutton.released.connect(self.trace_display_changed)
+        self._mw.trace_sum_radiobutton.setEnabled(True)
+        self._mw.trace_sum_radiobutton.released.connect(self.trace_display_changed)
 
         # Connect the default view action
         self._mw.restore_default_view_Action.triggered.connect(self.restore_default_view)
@@ -262,10 +264,10 @@ class CounterGui(GUIBase):
 
         if self._counting_logic.module_state() == 'locked':
             if 0 < self._counting_logic.countdata_smoothed[(self._display_trace-1), -1] < 10:
-                self._mw.count_value_Label.setText( f"{int(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1])} ({np.round(self._counting_logic.countdata_avg,2)})")
+                self._mw.count_value_Label.setText( f"{int(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1])} ({np.round(self._counting_logic.countdata_avg[(self._display_trace-1)],2)})")
                     #'{0:,.6f}'.format(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1]))
             else:
-                self._mw.count_value_Label.setText( f"{int(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1])} ({np.round(self._counting_logic.countdata_avg,2)})")
+                self._mw.count_value_Label.setText( f"{int(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1])} ({np.round(self._counting_logic.countdata_avg[(self._display_trace-1)],2)})")
                     #'{0:,.0f}'.format(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1]))
 
             x_vals = (
@@ -374,6 +376,8 @@ class CounterGui(GUIBase):
             self._display_trace = 3
         elif self._mw.trace_4_radiobutton.isChecked():
             self._display_trace = 4
+        elif self._mw.trace_sum_radiobutton.isChecked(): ####
+            self._display_trace = len(self._counting_logic.get_channels())+1
         else:
             self._display_trace = 1
 

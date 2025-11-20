@@ -24,6 +24,7 @@ top-level directory of this distribution and at <https://github.com/Ulm-IQO/qudi
 import os
 import numpy as np
 import time
+import cv2
 
 from collections import OrderedDict
 from core.connector import Connector
@@ -32,6 +33,8 @@ from datetime import datetime
 from logic.generic_logic import GenericLogic
 from qtpy import QtCore
 from core.util.mutex import Mutex
+
+from PyQt5 import QtTest
 
 
 class RegionOfInterest:
@@ -647,6 +650,7 @@ class PoiManagerLogic(GenericLogic):
     @QtCore.Slot()
     def delete_all_pois(self):
         self.active_poi = None
+        QtTest.QTest.qSleep(200)
         for name in self.poi_names:
             self._roi.delete_poi(name)
             self.sigPoiUpdated.emit(name, '', np.zeros(3))
@@ -1249,29 +1253,72 @@ class PoiManagerLogic(GenericLogic):
         return xc, yc
 
     def auto_catch_poi(self):
-        scan_image = self.roi_scan_image.T
+        scan_image = self.roi_scan_image # removed .T
         x_range = self.roi_scan_image_extent[0]
         y_range = self.roi_scan_image_extent[1]
-        x_axis = np.arange(x_range[0], x_range[1], (x_range[1] - x_range[0]) / len(scan_image))
-        y_axis = np.arange(y_range[0], y_range[1], (y_range[1] - y_range[0]) / len(scan_image[0]))
+        x_axis = np.arange(x_range[0], x_range[1], (x_range[1] - x_range[0]) / len(scan_image[0]))
+        y_axis = np.arange(y_range[0], y_range[1], (y_range[1] - y_range[0]) / len(scan_image))
 
-        for i in range(0, len(scan_image)):
-            for j in range(0, len(scan_image[i])):
-                scan_image[i][j] = int(scan_image[i][j])  # data here somehow needs to be reset, otherwise shit happens.
+        # for i in range(0, len(scan_image)):
+        #     for j in range(0, len(scan_image[i])):
+        #         scan_image[i][j] = int(scan_image[i][j])  # data here somehow needs to be reset, otherwise shit happens.
 
-        threshold = scan_image.mean() * self._poi_threshold
+        # threshold = scan_image.mean() * self._poi_threshold
 
-        xc1, yc1 = self._local_max(scan_image)
-        xc2 = []
-        yc2 = []
-        for i in range(0, len(xc1)):
-            if scan_image[xc1[i], yc1[i]] > threshold:
-                xc2.append(xc1[i])
-                yc2.append(yc1[i])
+        # xc1, yc1 = self._local_max(scan_image)
+        # xc2 = []
+        # yc2 = []
+        # for i in range(0, len(xc1)):
+        #     if scan_image[xc1[i], yc1[i]] > threshold:
+        #         xc2.append(xc1[i])
+        #         yc2.append(yc1[i])
+
+        arr = scan_image
+        arr_norm = arr - arr.min()
+        if arr_norm.max() > 0:
+            arr_norm = arr_norm / arr_norm.max()
+
+        # in 8-bit umwandeln
+        img = (arr_norm * 255).astype(np.uint8)
+
+        # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray = img
+
+        # Threshold -> helle Punkte finden
+        _, th = cv2.threshold(gray, self._poi_threshold, 255, cv2.THRESH_BINARY)
+
+        # Optionaler Blur für stabilere Erkennung
+        th = cv2.GaussianBlur(th, (5, 5), 0)
+
+        # # Konturen suchen
+        contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Nur „echte“ Cluster behalten
+        min_area = self._poi_diameter
+        points = []
+        for c in contours:
+            if cv2.contourArea(c) > min_area:
+                (x, y, w, h) = cv2.boundingRect(c)
+                cx = x + w//2
+                cy = y + h//2
+                points.append((np.clip(cx,0,scan_image.shape[1]-1), np.clip(cy,0,scan_image.shape[0]-1)))
+
+        # # Kreise zeichnen
+        # for (cx, cy) in points:
+        #     plt.plot(cx,cy,"ro",ms=5)
+        #     # cv2.circle(img, (cx, cy), 10, (0,0,255), 1)
+
+        print(f"points found ({len(points)}): {points}")
+        if len(points) != 0:
+            xc2,yc2 = np.array(points)[:,0],np.array(points)[:,1]
+        else: 
+            xc2, yc2 = [0],[0]
 
         pois = np.zeros((len(xc2), 3))
         z = self.scanner_position[2]
+        # print(len(x_axis),len(y_axis),scan_image.shape,x_axis)
         for i in range(0, len(pois)):
+            # print(i,xc2[i],yc2[i])
             pois[i] = [x_axis[xc2[i]], y_axis[yc2[i]], z]
             self.add_poi(pois[i])
             if self.poi_nametag is None:

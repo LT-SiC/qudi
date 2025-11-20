@@ -34,6 +34,8 @@ from qtpy import QtCore
 from qtpy import QtWidgets
 from qtpy import uic
 
+from logic.odmrlogic.odmr_logic import ODMRLogic_holder
+
 
 class ODMRWindow(QtWidgets.QMainWindow):
     """ Create the Main Window based on the *.ui file. """
@@ -80,7 +82,7 @@ class ODMRGUI(GUIBase):
         # Configuring the dock widgets
         # Use the inherited class 'CounterMainWindow' to create the GUI window
         self._mw = ODMRWindow()
-        self._odmr_logic= self.odmrlogic()
+        self._odmr_logic:ODMRLogic_holder = self.odmrlogic()
         self.initialize_connections_and_defaultvalues()
 
         #connect the signals:
@@ -237,6 +239,8 @@ class ODMRGUI(GUIBase):
         self.pulsed_cb_min = self._odmr_logic.pulsedODMRLogic.pulsed_odmr_cb_low_percentile
         self.pulsed_cb_max = self._odmr_logic.pulsedODMRLogic.pulsed_odmr_cb_high_percentile
 
+        # self._mw.cw_MW1_Power_LineEdit.setText(self._odmr_logic.ODMRLogic.cw_MW1_Power)
+        # in connectors and defaults
 
 
     def on_deactivate(self):

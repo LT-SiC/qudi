@@ -52,6 +52,7 @@ class streamUSBnidaq(Base, StreamUSBNidaqInterface): #Hardware file
             self.task_in.is_task_done()
             self.shut_down_streaming()
         except:
+            # self.shut_down_streaming()
             pass
 
        
@@ -137,3 +138,4 @@ class streamUSBnidaq(Base, StreamUSBNidaqInterface): #Hardware file
         # self.goToVoltage(0)
         self.task_in.close()
         self.task_out.close()
+        # self.task.

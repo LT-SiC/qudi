@@ -837,6 +837,7 @@ class SSR(object):
 
                     self.mcas.asc(length_mus=self.dur_step[alt_step][5],
                                   A1=True, A2=True,
+                                #   A1=True, A2=True, repump = True,
                                   name='State_check', **aa)
 
                     self.mcas.asc(length_mus=2.0,name = 'wait')

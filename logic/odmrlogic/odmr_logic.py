@@ -3,7 +3,7 @@
 import numpy as np
 import sys
 sys.path.append('C:\src\qudi\hardware\Keysight_AWG_M8190\pyarbtools_master') #quickfix to proceed, should be improved
-
+import os
 from core.module import Base
 from core.connector import Connector
 #from hardware.swabian_instruments.timetagger import TT as TimeTagger
@@ -13,6 +13,9 @@ from logic.generic_logic import GenericLogic
 from qtpy import QtCore
 from logic.odmrlogic.cw_ODMR_default_values_and_widget_functions import cw_ODMR_default_values_and_widget_functions as cw_default
 from logic.odmrlogic.pulsed_ODMR_default_values_and_widget_functions import pulsed_ODMR_default_values_and_widget_functions as pulsed_default
+from logic.biaslogic import BiasLogic
+from logic.save_logic import SaveLogic
+from logic.fit_logic import FitLogic
 
 import inspect
 import logging
@@ -31,6 +34,7 @@ class ODMRLogic_holder(GenericLogic):
     savelogic = Connector(interface='SaveLogic')
     mcas_holder = Connector(interface='McasDictHolderInterface')
     fitlogic = Connector(interface='FitLogic')
+    biaslogic = Connector(interface='BiasLogic')
     #transition_tracker = Connector(interface="TransitionTracker")
     CHANNEL_APD0 = 0
     CHANNEL_APD1 = 1
@@ -56,10 +60,14 @@ class ODMRLogic_holder(GenericLogic):
     SigClock= QtCore.Signal()
     SigCheckReady_Beacon = QtCore.Signal()
     sigFitPerformed =  QtCore.Signal(str, str)
+    sigstopODMR = QtCore.Signal()
 
     SelectLorentzianFit:bool=False
     SelectGaussianFit:bool=True
     align_mode=False # set to true if we want to align the B field
+
+    xy_coords = [0,0]
+    # bias_volts = [0,0]
 
     def on_activate(self):
         """
@@ -68,9 +76,10 @@ class ODMRLogic_holder(GenericLogic):
         # Get connectors
         self._time_tagger=self.counter_device()
         self._time_tagger.setup_TT()
-        self._save_logic = self.savelogic()
+        self._save_logic:SaveLogic = self.savelogic()
         self._awg = self.mcas_holder()#mcas_dict()
-        self._fit_logic = self.fitlogic()
+        self._fit_logic:FitLogic = self.fitlogic()
+        self._bias_logic:BiasLogic = self.biaslogic()
         #self._transition_tracker=self.transition_tracker()
         
         self.stop_awg = self._awg.mcas_dict.stop_awgs
@@ -127,7 +136,7 @@ class ODMRLogic_holder(GenericLogic):
             tag = ''
 
         filepath = self._save_logic.get_path_for_module(module_name='ODMR')
-        timestamp = datetime.datetime.now()
+        timestamp = None # datetime.datetime.now()
         
 
         if len(tag) > 0:
@@ -160,14 +169,20 @@ class ODMRLogic_holder(GenericLogic):
         parameters['A1 (bool)'] = self.ODMRLogic.cw_A1
         parameters['A2 (bool)'] = self.ODMRLogic.cw_A2
         parameters['Pulsed Repump (bool)'] = self.ODMRLogic.cw_PulsedRepump
-        parameters['Pulsed Duration (µs)'] = self.ODMRLogic.cw_RepumpDuration
-        parameters['Pulsed Decay (µs)'] = self.ODMRLogic.cw_RepumpDecay
+        parameters['Pulsed Duration (us)'] = self.ODMRLogic.cw_RepumpDuration
+        parameters['Pulsed Decay (us)'] = self.ODMRLogic.cw_RepumpDecay
         parameters['CW Repump (bool)'] = self.ODMRLogic.cw_CWRepump
         parameters['CTL (bool)'] = self.ODMRLogic.enable_CTL
         parameters['Seconds per Point (s)'] = self.ODMRLogic.cw_SecondsPerPoint
         parameters['Contrast'] = self.Contrast_Fit
         parameters['Frequencies (MHz)'] = self.Frequencies_Fit
         parameters['Linewidths (kHz)'] = self.Linewidths_Fit
+        with open(os.getcwd()+"\\current_temperature.txt","r") as f:
+            self.temperature = float(np.loadtxt(f,skiprows=3))
+        parameters['Sample temperature (K)'] = self.temperature
+        parameters['Defect position x/y (m/m)'] = self.xy_coords
+        parameters['Bias voltage [V1,V2] (V,V)'] = [self._bias_logic.constV,self._bias_logic.constV_2]
+
 
         fig = self.draw_cw_figure(
             data_raw['count data (counts)'],
@@ -245,13 +260,13 @@ class ODMRLogic_holder(GenericLogic):
         parameters['A1 (bool)'] = self.pulsedODMRLogic.pulsed_A1
         parameters['A2 (bool)'] = self.pulsedODMRLogic.pulsed_A2
         parameters['Pulsed Repump (bool)'] = self.pulsedODMRLogic.pulsed_PulsedRepump
-        parameters['Pulsed Duration (µs)'] = self.pulsedODMRLogic.pulsed_RepumpDuration
-        parameters['Pulsed Decay (µs)'] = self.pulsedODMRLogic.pulsed_RepumpDecay
+        parameters['Pulsed Duration (us)'] = self.pulsedODMRLogic.pulsed_RepumpDuration
+        parameters['Pulsed Decay (us)'] = self.pulsedODMRLogic.pulsed_RepumpDecay
         parameters['CW Repump (bool)'] = self.pulsedODMRLogic.pulsed_CWRepump
-        parameters['Init Time (µs)'] = self.pulsedODMRLogic.pulsed_InitTime
-        parameters['Init Decay (µs)'] = self.pulsedODMRLogic.pulsed_DecayInit
-        parameters['Readout Time (µs)'] = self.pulsedODMRLogic.pulsed_ReadoutTime
-        parameters['Readout Decay (µs)'] = self.pulsedODMRLogic.pulsed_ReadoutDecay
+        parameters['Init Time (us)'] = self.pulsedODMRLogic.pulsed_InitTime
+        parameters['Init Decay (us)'] = self.pulsedODMRLogic.pulsed_DecayInit
+        parameters['Readout Time (us)'] = self.pulsedODMRLogic.pulsed_ReadoutTime
+        parameters['Readout Decay (us)'] = self.pulsedODMRLogic.pulsed_ReadoutDecay
         parameters['Readout via A1 (bool)'] = self.pulsedODMRLogic.pulsed_A1Readout
         parameters['Readout via A2 (bool)'] = self.pulsedODMRLogic.pulsed_A2Readout
         parameters['AOM Delay (ns)'] = self.pulsedODMRLogic.pulsed_AOMDelay
@@ -639,6 +654,21 @@ class ODMRLogic_holder(GenericLogic):
   
 
 class ODMRLogic(cw_default):
+    
+    # cw_StartFreq = StatusVar('cw_StartFreq', 50)
+    # cw_StopFreq = StatusVar('cw_StopFreq', 90)
+    # cw_Stepsize = StatusVar('cw_Stepsize', 1)
+    # cw_MW2_Frequency = StatusVar('cw_MW2_Frequency', 140)
+    # cw_MW3_Frequency = StatusVar('cw_MW3_Frequency', 210)
+    # cw_MW1_Power = StatusVar('cw_MW1_Power', -21)
+    # cw_MW2_Power = StatusVar('cw_MW2_Power', -21)
+    # cw_MW3_Power = StatusVar('cw_MW3_Power', -21)
+    # cw_MW1 = StatusVar('cw_MW1', True)
+    # cw_MW2 = StatusVar('cw_MW2', True)
+    # cw_MW3 = StatusVar('cw_MW3', False)
+    # cw_SecondsPerPoint = StatusVar('cw_SecondsPerPoint', 0.01)
+    # cw_segment_length = StatusVar('cw_segment_length', 20)
+
     def __init__(self,holder):
         self.now = time.time()
         self.measurement_running=False

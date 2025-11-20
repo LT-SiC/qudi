@@ -632,13 +632,14 @@ class PlotData(qudip_enhanced.qtgui.gui_helpers.WithQt):
 
     @printexception
     def save_plot(self, filepath, notify=False):
-        t0 = time.time()
-        plt.ioff()
-        fig = plt.figure()
-        axes = self.update_plot_new(fig=fig)
-        fig.savefig(filepath)
-        plt.close(fig)
-        plt.ion()
+        pass # Disabled due to lagging on 18.07.2025
+        # t0 = time.time()
+        # plt.ioff()
+        # fig = plt.figure()
+        # axes = self.update_plot_new(fig=fig)
+        # fig.savefig(filepath)
+        # plt.close(fig)
+        # plt.ion()
         if notify:
             pass#logging.getLogger().info('Plot saved to {} in ({:.3f}s)'.format(filepath, time.time() - t0))
 

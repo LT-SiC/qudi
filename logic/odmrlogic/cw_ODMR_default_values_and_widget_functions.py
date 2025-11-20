@@ -26,6 +26,7 @@ class cw_ODMR_default_values_and_widget_functions:
         cw_RepumpDuration:float=5 #µs
         cw_RepumpDecay:float=3 #µs
         cw_CWRepump:bool=F
+        enable_CTL:bool=F
         cw_Stoptime:float=0 #s
         cw_PeriodicSaving:bool=F
         cw_Interval:float=0 #s
@@ -180,6 +181,7 @@ class cw_ODMR_default_values_and_widget_functions:
 
         def cw_Stop_Button_Clicked(self,on):
                 #self.holder.SigCheckReady_Beacon.disconnect()
+                self.holder.sigstopODMR.emit()
                 self.holder.stop_awg()
                 self.stoping_time=time.time()
                 self.time_differences.stop()

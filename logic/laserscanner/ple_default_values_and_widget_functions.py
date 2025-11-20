@@ -12,6 +12,7 @@ class ple_default_values_and_widget_functions:
         BlueDecay:float = 1000
 
         current_freq:str = ''
+        # current_arc_factor:str = 'ARC Factor (V/V):'
         factor_V_to_GHz:float = 1
         plot_x:float = 1
         
@@ -21,6 +22,8 @@ class ple_default_values_and_widget_functions:
         Contrast_Fit:str=''
         Frequencies_Fit:str=''
         Linewidths_Fit:str=''
+
+        # for CTL:
 
         #NumberOfLines: int = 10
         #ValuesPerScan: int = 200
@@ -33,6 +36,12 @@ class ple_default_values_and_widget_functions:
         def ple_Load_Button_Clicked(self,on):
                 print('done something with ple_Load_Button')
         
+        def toggle_emission_Button_Clicked(self,on):
+                self.toggle_emission()
+
+        def automatic_calibration_checkBox_StateChanged(self,value):
+                self.automatic_calibration=value==2
+
         def factor_V_to_GHz_pushButton_Clicked(self,on):
                 print('done something with factor_V_to_GHz_pushButton')
 

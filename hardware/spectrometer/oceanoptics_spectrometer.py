@@ -34,8 +34,14 @@ class OceanOptics(Base, SpectrometerInterface):
     def on_activate(self):
         """ Activate module.
         """
-
-        self.spec = sb.Spectrometer.from_first_available()
+        try:
+            self.spec = sb.Spectrometer.from_first_available()
+            self.spec_is_there = True
+        except sb.SeaBreezeError as e:
+            self.spec = None
+            self.spec_is_there = False
+            print("SeaBreezeError: ",e)
+            return
         self.log.info(''.format(self.spec.model, self.spec.serial_number))
         self.spec.integration_time_micros(self._integration_time * 1e6)
 

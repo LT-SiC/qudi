@@ -118,11 +118,12 @@ class CounterLogic(GenericLogic):
 
         # initialize data arrays
         self.countdata = np.zeros([len(self.get_channels()), self._count_length])
-        self.countdata_smoothed = np.zeros([len(self.get_channels()), self._count_length])
+        self.countdata_smoothed = np.zeros([len(self.get_channels())+1, self._count_length]) # new for sum
+        # self.countdata_smoothed = np.zeros([len(self.get_channels()), self._count_length])
         self.rawdata = np.zeros([len(self.get_channels()), self._counting_samples])
         self._already_counted_samples = 0  # For gated counting
         self._data_to_save = []
-        self.countdata_avg=0
+        self.countdata_avg=np.zeros([len(self.get_channels())+1])
         
         # Flag to stop the loop
         self.stopRequested = False
@@ -438,9 +439,10 @@ class CounterLogic(GenericLogic):
             # initialising the data arrays
             self.rawdata = np.zeros([len(self.get_channels()), self._counting_samples])
             self.countdata = np.zeros([len(self.get_channels()), self._count_length])
-            self.countdata_smoothed = np.zeros([len(self.get_channels()), self._count_length])
+            self.countdata_smoothed = np.zeros([len(self.get_channels())+1, self._count_length])
+            # self.countdata_smoothed = np.zeros([len(self.get_channels()), self._count_length])
             self._sampling_data = np.empty([len(self.get_channels()), self._counting_samples])
-            self.countdata_avg=0
+            self.countdata_avg=np.zeros([len(self.get_channels())+1])
 
             # the sample index for gated counting
             self._already_counted_samples = 0
@@ -689,7 +691,9 @@ class CounterLogic(GenericLogic):
         for i, ch in enumerate(self.get_channels()):
             self.countdata_smoothed[i, window:] = np.median(self.countdata[i,
                                                             -self._smooth_window_length:])
-            self.countdata_avg = np.mean(self.countdata[i,:])
+            self.countdata_avg[i] = np.mean(self.countdata[i,:])
+        self.countdata_smoothed[-1, window:] = np.sum(self.countdata_smoothed[:-1, window:],axis=0) ##new
+        self.countdata_avg[-1] = np.mean(np.sum(self.countdata,axis=0))
 
         # save the data if necessary
         if self._saving:

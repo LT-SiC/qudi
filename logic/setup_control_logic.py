@@ -1,6 +1,7 @@
 import numpy as np
 from qtpy import QtCore
 
+from core import gui
 from core.connector import Connector
 from logic.generic_logic import GenericLogic
 import sys
@@ -13,9 +14,13 @@ sys.path.append('C:\src\qudi\hardware\Keysight_AWG_M8190\pyarbtools_master') #qu
 
 from logic.save_logic import SaveLogic
 from hardware.Keysight_AWG_M8190.pym8190a import mcas_dict_holder
-
+from logic.cobolt_logic import CoboltLogic
+from hardware.swabian_instruments.timetagger import TT
 #PulseStreamer is tured on in "pulsed_measurement_logic.pulse_generator_on"
 #In order to be able to stream anything, a sequence has to be uploaded beforehand.
+
+# from gui.setupcontrol.setupcontrolgui import SetupControlGUIs
+
 
 
 class SetupControlLogic(GenericLogic):
@@ -23,15 +28,25 @@ class SetupControlLogic(GenericLogic):
     """
 
     sigUpdate = QtCore.Signal()
+    sigToggleLight = QtCore.Signal(bool)
+    sigToggleMirror = QtCore.Signal()
+    sigChangeA1 = QtCore.Signal(float)
 
     mcas_holder = Connector(interface='McasDictHolderInterface')
     # powercontrol = Connector(interface='LaserPowerHolder')
     savelogic = Connector(interface = 'SaveLogic')
+    cobolt_logic = Connector(interface='CoboltLogic')
+    timetagger = Connector(interface='TT')
 
     read_power:str='-'
 
-    _AOM_A1_volt = StatusVar('_AOM_A1_volt', 1)
-    _AOM_A2_volt = StatusVar('_AOM_A2_volt', 1)
+    AOM_A1_volt = StatusVar('AOM_A1_volt', 1)
+    AOM_A2_volt = StatusVar('AOM_A2_volt', 0.1)
+    AOM_CTL_volt = StatusVar('AOM_CTL_volt', 0.1)
+    AOM_A1_pow = StatusVar('_AOM_A1_pow', 0)
+    AOM_A2_pow = StatusVar('_AOM_A2_pow', 0)
+    AOM_CTL_pow = StatusVar('_AOM_CTL_pow', 0)
+    cobolt_power = StatusVar('cobolt_power', 0)
     MW1_freq = StatusVar('MW1_freq', 70)
     MW2_freq = StatusVar('MW2_freq', 140)
     MW3_freq = StatusVar('MW3_freq', 210)
@@ -47,11 +62,23 @@ class SetupControlLogic(GenericLogic):
     enable_Repump: bool = False
     enable_CTL: bool = False
     enable_Blue: bool = False
+    enable_Light: bool = False
+    enable_TopSpectrum: bool = False
+    enable_FiberSpectrum: bool = False
+    enable_FiberExcitation: bool = False
+    disable_Fiber_channel: bool = False
+    disable_Top_channel: bool = False
+    enable_TwoPLE: bool = False
+    enable_PLCLaser: bool = False
+
 
     active_channels=[] # used to talk to the pulsestreamer directly
     flip_mirror=False
 
-    SigReadPower= QtCore.Signal()
+    SigReadPower= QtCore.Signal(int)
+    SigReadPowerDone= QtCore.Signal(int,float,float)
+    # voltage_offset_A1A2: float = -0.0436
+    #     voltage_to_power_ratio_A1A2: float = 0.0073 #V/nW
 
     def __init__(self, config, **kwargs):   
         super().__init__(config=config, **kwargs)
@@ -64,8 +91,13 @@ class SetupControlLogic(GenericLogic):
         #self._powercontrol = self.powercontrol()
         #self._automized_measurement_logic = self.automizedmeasurementlogic()
         self._save_logic: SaveLogic = self.savelogic()
+        self._cobolt_logic: CoboltLogic = self.cobolt_logic()
+        self._timetagger: TT = self.timetagger()
+
         self.flipmirror_sequence_created = False
         self.ps=self._awg.mcas_dict.awgs["ps"]
+
+        
 
 
     def on_deactivate(self):
@@ -79,8 +111,15 @@ class SetupControlLogic(GenericLogic):
         self.enable_Repump:bool=False
         self.enable_CTL:bool=False
         self.enable_Blue:bool=False
-        self.AOM_A1_volt=0
-        self.AOM_A2_volt=0
+        self.enable_Light:bool=False
+        # self.enable_TopSpectrum:bool= False
+        # self.enable_FiberSpectrum:bool= False
+        # self.enable_FiberExcitation:bool= False
+        # self.enable_TwoPLE:bool=False
+        # self.enable_PLCLaser:bool=False
+        # self.AOM_A1_volt=0
+        # self.AOM_A2_volt=0
+        # self.AOM_CTL_volt=0
         self._awg.mcas_dict.stop_awgs()
         self.write_to_pulsestreamer()
         
@@ -88,50 +127,73 @@ class SetupControlLogic(GenericLogic):
         #del self._powercontrol
         return
 
-    @property
-    def AOM_A1_volt(self):
-        #print("getting AOM Volt")
-        return self._AOM_A1_volt
-    @property
-    def AOM_A2_volt(self):
-        #print("getting AOM Volt")
-        return self._AOM_A2_volt
+    # @property
+    # def AOM_A1_volt(self):
+    #     #print("getting AOM Volt")
+    #     return self._AOM_A1_volt
+    # @property
+    # def AOM_A2_volt(self):
+    #     #print("getting AOM Volt")
+    #     return self._AOM_A2_volt
+    # @property
+    # def AOM_CTL_volt(self):
+    #     #print("getting AOM Volt")
+    #     return self._AOM_CTL_volt
     
-    @AOM_A1_volt.setter
-    def AOM_A1_volt(self,val):
-        #print("setting AOM Volt", val)
-        if val>1:
-            val=1
-            print("Correcting AOM analog Amplitude to 1")
-        elif val<0:
-            val=0
-            print("Correcting AOM analog Amplitude to 0")
-        self._AOM_A1_volt=val
-        self.ps.analog_A1_volt=self._AOM_A1_volt
-        #self.write_to_pulsestreamer()
+    # @AOM_A1_volt.setter
+    # def AOM_A1_volt(self,val):
+    #     #print("setting AOM Volt", val)
+    #     # if val>1:
+    #     #     val=1
+    #     #     print("Correcting AOM analog Amplitude to 1")
+    #     # elif val<0:
+    #     #     val=0
+    #     #     print("Correcting AOM analog Amplitude to 0")
+    #     self._AOM_A1_volt=val
+    #     # self.ps.analog_A1_volt=self._AOM_A1_volt
+    #     #self.write_to_pulsestreamer()
 
-    @AOM_A2_volt.setter
-    def AOM_A2_volt(self,val):
-        #print("setting AOM Volt", val)
-        if val>1:
-            val=1
-            print("Correcting AOM analog Amplitude to 1")
-        elif val<0:
-            val=0
-            print("Correcting AOM analog Amplitude to 0")
-        self._AOM_A2_volt=val
-        self.ps.analog_A2_volt=self._AOM_A2_volt
-        #self.write_to_pulsestreamer()
+    # @AOM_A2_volt.setter
+    # def AOM_A2_volt(self,val):
+    #     #print("setting AOM Volt", val)
+    #     if val>1:
+    #         val=1
+    #         print("Correcting AOM analog Amplitude to 1")
+    #     elif val<0:
+    #         val=0
+    #         print("Correcting AOM analog Amplitude to 0")
+    #     self._AOM_A2_volt=val
+    #     self.ps.analog_A2_volt=self._AOM_A2_volt
+    #     #self.write_to_pulsestreamer()
 
-    @AOM_A1_volt.deleter
-    def AOM_A1_volt(self):
-        #print("deleting OAM Volt")
-        del self._AOM_A1_volt
+    # @AOM_CTL_volt.setter
+    # def AOM_CTL_volt(self,val):
+    #     #print("setting AOM Volt", val)
+    #     if val>1:
+    #         val=1
+    #         print("Correcting AOM analog Amplitude to 1")
+    #     elif val<0:
+    #         val=0
+    #         print("Correcting AOM analog Amplitude to 0")
+    #     self._AOM_CTL_volt=val
+    #     # TODO
+    #     self.ps.analog_CTL_volt=self._AOM_CTL_volt
+    #     #self.write_to_pulsestreamer()
+
+    # @AOM_A1_volt.deleter
+    # def AOM_A1_volt(self):
+    #     #print("deleting OAM Volt")
+    #     del self._AOM_A1_volt
     
-    @AOM_A2_volt.deleter
-    def AOM_A2_volt(self):
-        #print("deleting OAM Volt")
-        del self._AOM_A2_volt
+    # @AOM_A2_volt.deleter
+    # def AOM_A2_volt(self):
+    #     #print("deleting OAM Volt")
+    #     del self._AOM_A2_volt
+
+    # @AOM_CTL_volt.deleter
+    # def AOM_CTL_volt(self):
+    #     #print("deleting OAM Volt")
+    #     del self._AOM_CTL_volt
 
     def power_to_amp(self, power_dBm, impedance=50):
         power_dBm = np.atleast_1d(power_dBm)
@@ -230,20 +292,20 @@ class SetupControlLogic(GenericLogic):
         return
     
     def write_to_pulsestreamer(self):
-        self.active_channels=list(filter(("").__ne__, ["A1"*self.enable_A1,"A2"*self.enable_A2,"CTL"*self.enable_CTL,"Blue"*self.enable_Blue,"repump"*self.enable_Repump,'FlipMirror'*self.flip_mirror]))
+        self.active_channels=list(filter(("").__ne__, ["A1"*self.enable_A1,"A2"*self.enable_A2,"CTL"*self.enable_CTL,"Blue"*self.enable_Blue,"repump"*self.enable_Repump]))
         #self.active_channels=list(filter(("").__ne__, [])) #This turns off all lasers when adjusting the AOM power
-        self.ps.constant(pulse=(0,self.active_channels,self.AOM_A2_volt,self.AOM_A1_volt)) #Ok this is actually not the power we set but the analog input on the A2 AOM
+        self.ps.constant(pulse=(0,self.active_channels,self.AOM_A2_volt,self.AOM_CTL_volt)) #Ok this is actually not the power we set but the analog input on the A2 AOM
 
     def MW_on(self):
         return self.enable_MW1 or self.enable_MW2 or self.enable_MW3
 
     def run(self):
-        # if self.MW_on():
-        #     self.setup_seq()
-        # else:
-        #     self._awg.mcas_dict.stop_awgs()
-        #     self.write_to_pulsestreamer()
-        self.setup_seq()
+        if self.MW_on():
+            self.setup_seq()
+        else:
+            self._awg.mcas_dict.stop_awgs()
+            self.write_to_pulsestreamer()
+        # self.setup_seq()
         
     def A1_Button_Clicked(self,on):
         #print('done something with A1_Button')
@@ -269,6 +331,69 @@ class SetupControlLogic(GenericLogic):
         #print('done something with Blue_Button')
         self.enable_Blue=on
         self.run()
+
+    def Light_Button_Clicked(self,on):
+        #print('done something with Light_Button')
+        self.enable_Light=on
+        self.sigToggleLight.emit(on)
+
+    def TopSpectrum_Button_Clicked(self,on):
+        #print('done something with TopSpectrum_Button')
+        self.enable_TopSpectrum=on
+        self.sigToggleMirror.emit()
+
+    def FiberSpectrum_Button_Clicked(self,on):
+        #print('done something with FiberSpectrum_Button')
+        self.enable_FiberSpectrum=on
+        self.sigToggleMirror.emit()
+
+    def Excitation_Button_Clicked(self,on):
+        #print('done something with Excitation_Button')
+        self.enable_FiberExcitation=on
+        self.sigToggleMirror.emit()
+
+    def disableFiber_pushButton_Clicked(self,on):
+        #print('done something with disableFiber_pushButton')
+        self.disable_Fiber_channel=on
+        self.change_trigger_level(0,on)
+
+    def disableTop_pushButton_Clicked(self,on):
+        #print('done something with disableTop_pushButton')
+        self.disable_Top_channel=on
+        self.change_trigger_level(1,on)
+
+    def change_trigger_level(self,ch,state):
+        val = {True: [10,10], False: [0.08,0.04]}[state][ch]
+        self._timetagger.tagger.setTriggerLevel(ch, val)
+
+    def TwoPLE_Button_Clicked(self,on):
+        #print('done something with TwoPLE_Button')
+        self.enable_TwoPLE=on
+        self.sigToggleMirror.emit()
+
+    def PLELaser_Button_Clicked(self,on):
+        #print('done something with PLELaser_Button')
+        self.enable_PLCLaser=True
+        if on:
+            self.PLELaser="DLC"
+        else:
+            self.PLELaser="CTL"
+        self.sigToggleMirror.emit()
+        time.sleep(1)
+        self.enable_PLCLaser=False
+        self.sigToggleMirror.emit()
+
+    def PLELaser_Locked(self,on):
+        #print('done something with PLELaser_Button')
+        self.enable_PLCLaser=True
+        if on:
+            self.PLELaser="DLC"
+        else:
+            self.PLELaser="CTL"
+        self.sigToggleMirror.emit()
+        time.sleep(1)
+        self.enable_PLCLaser=False
+        self.sigToggleMirror.emit()
 
     def MW1_on_Button_Clicked(self,on):
         #print('done something with MW1_on_Button')
@@ -309,63 +434,84 @@ class SetupControlLogic(GenericLogic):
         #print('done something with MW3_freq_DoubleSpinBox. Value=',value)
         self.MW3_freq=value
 
-    def Flipmirror_Button_Clicked(self,on):
-        awg_running_seq="" #TODO get the active running sequence
-        self._awg.mcas_dict.stop_awgs()
-        self.flip_mirror=True
-        self.write_to_pulsestreamer()
-        time.sleep(0.01)
-        self.flip_mirror=False
-        self._awg.mcas_dict.stop_awgs()
-        # if self.MW_on():
-        #     self._awg.mcas_dict["setupcontrol"].run()
-        # else:
-        #     self.write_to_pulsestreamer()
+    # def Flipmirror_Button_Clicked(self,on):
+    #     awg_running_seq="" #TODO get the active running sequence
+    #     self._awg.mcas_dict.stop_awgs()
+    #     self.flip_mirror=True
+    #     self.write_to_pulsestreamer()
+    #     time.sleep(0.01)
+    #     self.flip_mirror=False
+    #     self._awg.mcas_dict.stop_awgs()
+    #     # if self.MW_on():
+    #     #     self._awg.mcas_dict["setupcontrol"].run()
+    #     # else:
+    #     #     self.write_to_pulsestreamer()
 
 
-    def create_flipmirror_sequence(self):
-        seq = self._awg.mcas(name="FlippyFloppy", ch_dict={"2g": [1,2],"ps": [1]})
-        seq.start_new_segment("Start", loop_count=100)
-        seq.asc(name='Flip', length_mus=500, FlipMirror=True)
-        self._awg.mcas_dict.stop_awgs()
-        self._awg.mcas_dict['FlippyFloppy'] = seq
-        self._awg.mcas_dict.print_info()
-        self.flipmirror_sequence_created = True
+    # def create_flipmirror_sequence(self):
+    #     seq = self._awg.mcas(name="FlippyFloppy", ch_dict={"2g": [1,2],"ps": [1]})
+    #     seq.start_new_segment("Start", loop_count=100)
+    #     seq.asc(name='Flip', length_mus=500, FlipMirror=True)
+    #     self._awg.mcas_dict.stop_awgs()
+    #     self._awg.mcas_dict['FlippyFloppy'] = seq
+    #     self._awg.mcas_dict.print_info()
+    #     self.flipmirror_sequence_created = True
     
     def Autofocus_Button_Clicked(self,on):
         print('done something with Autofocus_Button')
 
     def Read_A1Power_Button_Clicked(self,on):
         #self.read_power = str(self._powercontrol._laser_power._Read_Power_button_fired()) + " nW"
-        self.SigReadPower.emit()
+        self.SigReadPower.emit(1)
     
     def Read_A2Power_Button_Clicked(self,on):
         #self.read_power = str(self._powercontrol._laser_power._Read_Power_button_fired()) + " nW"
-        self.SigReadPower.emit()
+        self.SigReadPower.emit(2)
+
+    def Read_CTLPower_Button_Clicked(self,on):
+        #self.read_power = str(self._powercontrol._laser_power._Read_Power_button_fired()) + " nW"
+        self.SigReadPower.emit(3)
 
     def Set_A1Power_Button_Clicked(self,on):
         #self._powercontrol._laser_power.power_target = self.set_power
         #self._powercontrol._laser_power._run()
         #self.read_power = str(self._powercontrol._laser_power._Read_Power_button_fired()) + " nW"
         #print('Set power to: ', self.read_power)
-        self.SigReadPower.emit()
+        self.SigReadPower.emit(1)
+        self.sigChangeA1.emit(self.AOM_A1_volt)
         self.write_to_pulsestreamer()
+    
+    def Set_RepumpPower_Button_Clicked(self,on):
+        self.setCoboltPower(self.cobolt_power)
     
     def Set_A2Power_Button_Clicked(self,on):
         #self._powercontrol._laser_power.power_target = self.set_power
         #self._powercontrol._laser_power._run()
         #self.read_power = str(self._powercontrol._laser_power._Read_Power_button_fired()) + " nW"
         #print('Set power to: ', self.read_power)
-        self.SigReadPower.emit()
+        self.SigReadPower.emit(2)
+        self.write_to_pulsestreamer()
+
+    def Set_CTLPower_Button_Clicked(self,on):
+        self.SigReadPower.emit(3)
         self.write_to_pulsestreamer()
 
     def Set_A2Power_DoubleSpinBox_Edited(self,value):
         #print('done something with set_power_DoubleSpinBox. Value=',value)
         self.AOM_A2_volt=value
+        self.ps.analog_A2_volt=self.AOM_A2_volt
     
     def Set_A1Power_DoubleSpinBox_Edited(self,value):
         #print('done something with set_power_DoubleSpinBox. Value=',value)
         self.AOM_A1_volt=value
+
+    def Set_RepumpPower_DoubleSpinBox_Edited(self,value):
+        self.cobolt_power=value
+
+    def Set_CTLPower_DoubleSpinBox_Edited(self,value):
+        #print('done something with set_power_DoubleSpinBox. Value=',value)
+        self.AOM_CTL_volt=value
+        self.ps.analog_CTL_volt=self.AOM_CTL_volt
         
     def StartAutoMeas_Button_Clicked(self,on):
         # save current POIs
@@ -381,3 +527,7 @@ class SetupControlLogic(GenericLogic):
 
     def SavePOIs_Button_Clicked(self,on):
         print("Nothing happend")  
+
+    def setCoboltPower(self, pow):
+        self._cobolt_logic.power(pow)
+        print("Cobolt laser power set to: ",pow)

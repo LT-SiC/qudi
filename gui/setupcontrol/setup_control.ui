@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>575</width>
+    <width>747</width>
     <height>452</height>
    </rect>
   </property>
@@ -20,229 +20,58 @@
       <property name="horizontalSpacing">
        <number>6</number>
       </property>
-      <item row="5" column="0">
-       <widget class="QLabel" name="label_6">
+      <item row="11" column="4">
+       <widget class="QLabel" name="Read_A2Power_Label">
         <property name="text">
-         <string>MW2</string>
+         <string>0 nW</string>
         </property>
        </widget>
       </item>
-      <item row="10" column="3">
-       <widget class="QPushButton" name="SavePOIs_Button">
-        <property name="text">
-         <string>Save POIs</string>
-        </property>
-       </widget>
+      <item row="2" column="5">
+       <widget class="QDoubleSpinBox" name="blue_time_doubleSpinBox"/>
       </item>
-      <item row="3" column="1">
-       <widget class="QLabel" name="label_4">
-        <property name="text">
-         <string>MW frequency (MHz)</string>
-        </property>
-       </widget>
+      <item row="2" column="1">
+       <widget class="QDoubleSpinBox" name="A1_time_doubleSpinBox"/>
       </item>
-      <item row="4" column="0">
-       <widget class="QLabel" name="label_3">
-        <property name="text">
-         <string>MW1</string>
-        </property>
-       </widget>
-      </item>
-      <item row="7" column="2">
-       <widget class="QPushButton" name="Set_A1Power_Button">
-        <property name="text">
-         <string>Set A1 Power</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="2">
+      <item row="1" column="2">
        <widget class="QPushButton" name="A2_Button">
         <property name="text">
          <string>A2</string>
         </property>
        </widget>
       </item>
-      <item row="9" column="1">
-       <widget class="QPushButton" name="Autofocus_Button">
+      <item row="1" column="5">
+       <widget class="QPushButton" name="Blue_Button">
         <property name="text">
-         <string>Autofocus</string>
+         <string>Blue</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_2">
-        <property name="text">
-         <string>Laser pulse time</string>
-        </property>
-       </widget>
-      </item>
-      <item row="8" column="4">
-       <widget class="QLabel" name="Read_A2Power_Label">
-        <property name="text">
-         <string>TextLabel</string>
-        </property>
-       </widget>
-      </item>
-      <item row="10" column="1">
-       <widget class="QPushButton" name="StartAutoMeas_Button">
-        <property name="text">
-         <string>Start Auto. Meas.</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="2">
-       <widget class="QLabel" name="label">
-        <property name="text">
-         <string>MW Power (dBm)</string>
-        </property>
-       </widget>
-      </item>
-      <item row="7" column="3">
-       <widget class="QPushButton" name="Read_A1Power_Button">
-        <property name="text">
-         <string>Read A1 Power</string>
-        </property>
-       </widget>
-      </item>
-      <item row="9" column="2">
-       <widget class="QPushButton" name="Flipmirror_Button">
-        <property name="text">
-         <string>Flip Mirror</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="2">
-       <widget class="QDoubleSpinBox" name="A2_time_doubleSpinBox"/>
-      </item>
-      <item row="0" column="1">
-       <widget class="QPushButton" name="A1_Button">
-        <property name="cursor">
-         <cursorShape>ArrowCursor</cursorShape>
-        </property>
-        <property name="text">
-         <string>A1</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="3">
-       <widget class="QPushButton" name="MW3_on_Button">
-        <property name="text">
-         <string>MW3 ON</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="2">
-       <widget class="QDoubleSpinBox" name="MW1_power_DoubleSpinBox">
-        <property name="minimum">
-         <double>-100.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="0">
-       <widget class="QLabel" name="label_7">
-        <property name="text">
-         <string>MW3</string>
-        </property>
-       </widget>
-      </item>
-      <item row="7" column="4">
-       <widget class="QLabel" name="Read_A1Power_Label">
-        <property name="text">
-         <string>TextLabel</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="0">
-       <widget class="QLabel" name="label_1">
-        <property name="text">
-         <string>Lasers</string>
-        </property>
-       </widget>
-      </item>
-      <item row="7" column="1">
-       <widget class="QDoubleSpinBox" name="Set_A1Power_DoubleSpinBox">
-        <property name="decimals">
-         <number>4</number>
-        </property>
-        <property name="minimum">
-         <double>0.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>1.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="2">
-       <widget class="QDoubleSpinBox" name="MW2_power_DoubleSpinBox">
-        <property name="minimum">
-         <double>-100.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="QDoubleSpinBox" name="A1_time_doubleSpinBox"/>
-      </item>
-      <item row="8" column="2">
-       <widget class="QPushButton" name="Set_A2Power_Button">
-        <property name="text">
-         <string>Set A2 Power</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="3">
-       <widget class="QPushButton" name="Repump_Button">
-        <property name="text">
-         <string>Repump</string>
-        </property>
-       </widget>
+      <item row="2" column="4">
+       <widget class="QDoubleSpinBox" name="ctl_time_doubleSpinBox"/>
       </item>
       <item row="6" column="1">
-       <widget class="QDoubleSpinBox" name="MW3_freq_DoubleSpinBox">
-        <property name="maximum">
-         <double>9999.989999999999782</double>
-        </property>
-        <property name="value">
-         <double>70.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="3">
-       <widget class="QPushButton" name="MW2_on_Button">
+       <widget class="QLabel" name="label_4">
         <property name="text">
-         <string>MW2 ON</string>
+         <string>MW frequency (MHz)</string>
         </property>
        </widget>
       </item>
-      <item row="8" column="1">
-       <widget class="QDoubleSpinBox" name="Set_A2Power_DoubleSpinBox">
-        <property name="decimals">
-         <number>4</number>
-        </property>
-        <property name="maximum">
-         <double>1.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
-        </property>
-        <property name="value">
-         <double>0.100000000000000</double>
+      <item row="8" column="0">
+       <widget class="QLabel" name="label_6">
+        <property name="text">
+         <string>MW2</string>
         </property>
        </widget>
       </item>
-      <item row="0" column="4">
+      <item row="1" column="4">
        <widget class="QPushButton" name="CTL_Button">
         <property name="text">
          <string>CTL</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="4">
-       <widget class="QDoubleSpinBox" name="ctl_time_doubleSpinBox"/>
-      </item>
-      <item row="4" column="1">
+      <item row="7" column="1">
        <widget class="QDoubleSpinBox" name="MW1_freq_DoubleSpinBox">
         <property name="maximum">
          <double>9999.989999999999782</double>
@@ -252,7 +81,347 @@
         </property>
        </widget>
       </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_1">
+        <property name="text">
+         <string>Lasers</string>
+        </property>
+       </widget>
+      </item>
+      <item row="10" column="0">
+       <widget class="QLabel" name="label_8">
+        <property name="text">
+         <string>-10..10</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="3">
+       <widget class="QPushButton" name="Read_CTLPower_Button">
+        <property name="text">
+         <string>Read CTL Power</string>
+        </property>
+       </widget>
+      </item>
+      <item row="9" column="3">
+       <widget class="QPushButton" name="MW3_on_Button">
+        <property name="text">
+         <string>MW3 ON</string>
+        </property>
+       </widget>
+      </item>
+      <item row="15" column="3">
+       <widget class="QPushButton" name="SavePOIs_Button">
+        <property name="text">
+         <string>Save POIs</string>
+        </property>
+       </widget>
+      </item>
+      <item row="11" column="2">
+       <widget class="QPushButton" name="Set_A2Power_Button">
+        <property name="text">
+         <string>Set A2 Power</string>
+        </property>
+       </widget>
+      </item>
+      <item row="11" column="0">
+       <widget class="QLabel" name="label_9">
+        <property name="text">
+         <string>0..1</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="1">
+       <widget class="QDoubleSpinBox" name="Set_CTLPower_DoubleSpinBox">
+        <property name="decimals">
+         <number>4</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.010000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="11" column="5">
+       <widget class="QLabel" name="Read_A2Power_Label_t">
+        <property name="text">
+         <string>0 nW</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QDoubleSpinBox" name="A2_time_doubleSpinBox"/>
+      </item>
+      <item row="10" column="4">
+       <widget class="QLabel" name="Read_A1Power_Label">
+        <property name="text">
+         <string>0 nW</string>
+        </property>
+       </widget>
+      </item>
+      <item row="8" column="2">
+       <widget class="QDoubleSpinBox" name="MW2_power_DoubleSpinBox">
+        <property name="minimum">
+         <double>-100.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="3">
+       <widget class="QPushButton" name="FiberSpectrum_Button">
+        <property name="text">
+         <string>Fiber Spectrum</string>
+        </property>
+       </widget>
+      </item>
       <item row="5" column="1">
+       <widget class="QLabel" name="label_5">
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QPushButton" name="A1_Button">
+        <property name="cursor">
+         <cursorShape>ArrowCursor</cursorShape>
+        </property>
+        <property name="text">
+         <string>A1</string>
+        </property>
+       </widget>
+      </item>
+      <item row="7" column="3">
+       <widget class="QPushButton" name="MW1_on_Button">
+        <property name="text">
+         <string>MW1 ON</string>
+        </property>
+       </widget>
+      </item>
+      <item row="15" column="2">
+       <widget class="QPushButton" name="StopAutoMeas_Button">
+        <property name="text">
+         <string>Stop Auto. Meas.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="8" column="3">
+       <widget class="QPushButton" name="MW2_on_Button">
+        <property name="text">
+         <string>MW2 ON</string>
+        </property>
+       </widget>
+      </item>
+      <item row="10" column="5">
+       <widget class="QLabel" name="Read_A1Power_Label_t">
+        <property name="text">
+         <string>0 nW</string>
+        </property>
+       </widget>
+      </item>
+      <item row="9" column="0">
+       <widget class="QLabel" name="label_7">
+        <property name="text">
+         <string>MW3</string>
+        </property>
+       </widget>
+      </item>
+      <item row="10" column="2">
+       <widget class="QPushButton" name="Set_A1Power_Button">
+        <property name="text">
+         <string>Set A1 Power</string>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="5">
+       <widget class="QLabel" name="Read_CTLPower_Label_t">
+        <property name="text">
+         <string>0 nW</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="4">
+       <widget class="QPushButton" name="Excitation_Button">
+        <property name="text">
+         <string>Fiber Excitation</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QPushButton" name="Repump_Button">
+        <property name="text">
+         <string>Repump</string>
+        </property>
+       </widget>
+      </item>
+      <item row="10" column="3">
+       <widget class="QPushButton" name="Read_A1Power_Button">
+        <property name="text">
+         <string>Read A1 Power</string>
+        </property>
+       </widget>
+      </item>
+      <item row="7" column="0">
+       <widget class="QLabel" name="label_3">
+        <property name="text">
+         <string>MW1</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="3">
+       <widget class="QDoubleSpinBox" name="Repump_time_doubleSpinBox"/>
+      </item>
+      <item row="6" column="2">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>MW Power (dBm)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_2">
+        <property name="text">
+         <string>Laser pulse time</string>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="2">
+       <widget class="QPushButton" name="Set_CTLPower_Button">
+        <property name="text">
+         <string>Set CTL Power</string>
+        </property>
+       </widget>
+      </item>
+      <item row="11" column="1">
+       <widget class="QDoubleSpinBox" name="Set_A2Power_DoubleSpinBox">
+        <property name="decimals">
+         <number>4</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.010000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.100000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="9" column="2">
+       <widget class="QDoubleSpinBox" name="MW3_power_DoubleSpinBox">
+        <property name="minimum">
+         <double>-100.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="9" column="4">
+       <widget class="QLabel" name="label_11">
+        <property name="text">
+         <string>Fiber</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="4">
+       <widget class="QLabel" name="Read_CTLPower_Label">
+        <property name="text">
+         <string>0 nW</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QPushButton" name="PLELaser_Button">
+        <property name="text">
+         <string>PLE: CTL</string>
+        </property>
+       </widget>
+      </item>
+      <item row="9" column="5">
+       <widget class="QLabel" name="label_12">
+        <property name="text">
+         <string>Top</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="5">
+       <widget class="QPushButton" name="TwoPLE_Button">
+        <property name="text">
+         <string>TwoLaserPLE</string>
+        </property>
+       </widget>
+      </item>
+      <item row="11" column="3">
+       <widget class="QPushButton" name="Read_A2Power_Button">
+        <property name="text">
+         <string>Read A2 Power</string>
+        </property>
+       </widget>
+      </item>
+      <item row="10" column="1">
+       <widget class="QDoubleSpinBox" name="Set_A1Power_DoubleSpinBox">
+        <property name="decimals">
+         <number>4</number>
+        </property>
+        <property name="minimum">
+         <double>-10.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>10.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.100000000000000</double>
+        </property>
+        <property name="value">
+         <double>-10.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="9" column="1">
+       <widget class="QDoubleSpinBox" name="MW3_freq_DoubleSpinBox">
+        <property name="maximum">
+         <double>9999.989999999999782</double>
+        </property>
+        <property name="value">
+         <double>70.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="2">
+       <widget class="QPushButton" name="TopSpectrum_Button">
+        <property name="text">
+         <string>Top Spectrum</string>
+        </property>
+        <property name="checkable">
+         <bool>false</bool>
+        </property>
+        <property name="default">
+         <bool>false</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="0">
+       <widget class="QLabel" name="label_10">
+        <property name="text">
+         <string>0..1</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="8" column="1">
        <widget class="QDoubleSpinBox" name="MW2_freq_DoubleSpinBox">
         <property name="maximum">
          <double>9999.989999999999782</double>
@@ -262,53 +431,98 @@
         </property>
        </widget>
       </item>
-      <item row="4" column="3">
-       <widget class="QPushButton" name="MW1_on_Button">
+      <item row="15" column="0">
+       <widget class="QPushButton" name="Autofocus_Button">
         <property name="text">
-         <string>MW1 ON</string>
+         <string>Autofocus</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
-       <widget class="QLabel" name="label_5">
-        <property name="text">
-         <string/>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="3">
-       <widget class="QDoubleSpinBox" name="Repump_time_doubleSpinBox"/>
-      </item>
-      <item row="8" column="3">
-       <widget class="QPushButton" name="Read_A2Power_Button">
-        <property name="text">
-         <string>Read A2 Power</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="2">
-       <widget class="QDoubleSpinBox" name="MW3_power_DoubleSpinBox">
+      <item row="7" column="2">
+       <widget class="QDoubleSpinBox" name="MW1_power_DoubleSpinBox">
         <property name="minimum">
          <double>-100.000000000000000</double>
         </property>
        </widget>
       </item>
-      <item row="10" column="2">
-       <widget class="QPushButton" name="StopAutoMeas_Button">
+      <item row="4" column="1">
+       <widget class="QPushButton" name="Light_Button">
+        <property name="font">
+         <font>
+          <weight>50</weight>
+          <bold>false</bold>
+         </font>
+        </property>
+        <property name="styleSheet">
+         <string notr="true"/>
+        </property>
         <property name="text">
-         <string>Stop Auto. Meas.</string>
+         <string>Light</string>
+        </property>
+        <property name="checkable">
+         <bool>false</bool>
+        </property>
+        <property name="default">
+         <bool>false</bool>
+        </property>
+        <property name="flat">
+         <bool>false</bool>
         </property>
        </widget>
       </item>
-      <item row="0" column="5">
-       <widget class="QPushButton" name="Blue_Button">
+      <item row="15" column="1">
+       <widget class="QPushButton" name="StartAutoMeas_Button">
         <property name="text">
-         <string>Blue</string>
+         <string>Start Auto. Meas.</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="5">
-       <widget class="QDoubleSpinBox" name="blue_time_doubleSpinBox"/>
+      <item row="13" column="0">
+       <widget class="QLabel" name="label_13">
+        <property name="text">
+         <string>0..50</string>
+        </property>
+        <property name="alignment">
+         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+        </property>
+       </widget>
+      </item>
+      <item row="13" column="1">
+       <widget class="QDoubleSpinBox" name="Set_RepumpPower_DoubleSpinBox">
+        <property name="decimals">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <double>50.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>30.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="13" column="2">
+       <widget class="QPushButton" name="Set_RepumpPower_Button">
+        <property name="text">
+         <string>Set Repump Power</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="4">
+       <widget class="QPushButton" name="disableFiber_pushButton">
+        <property name="text">
+         <string>Disable Fiber Collection</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="4">
+       <widget class="QPushButton" name="disableTop_pushButton">
+        <property name="text">
+         <string>Disable Top Collection</string>
+        </property>
+       </widget>
       </item>
      </layout>
     </item>
@@ -319,7 +533,7 @@
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>575</width>
+     <width>747</width>
      <height>21</height>
     </rect>
    </property>
@@ -347,8 +561,6 @@
   <tabstop>Set_A1Power_DoubleSpinBox</tabstop>
   <tabstop>Set_A1Power_Button</tabstop>
   <tabstop>Read_A1Power_Button</tabstop>
-  <tabstop>Autofocus_Button</tabstop>
-  <tabstop>Flipmirror_Button</tabstop>
  </tabstops>
  <resources/>
  <connections/>

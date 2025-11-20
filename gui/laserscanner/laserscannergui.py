@@ -38,6 +38,7 @@ from PyQt5 import QtTest
 
 from gui.laserscanner.connectors_and_set_default import initialize_connections_and_defaultvalue as ple_default_functions
 
+from hardware.Keysight_AWG_M8190.pym8190a import valid_ch_dict
 from logic.laserscanner.laser_scanner_logic import LaserScannerLogic
 
 
@@ -96,9 +97,14 @@ class VoltScanGui(GUIBase, ple_default_functions):
     sigChangeRange = QtCore.Signal(list)
     sigChangeResolution = QtCore.Signal(float)
     sigChangeSpeed = QtCore.Signal(float)
+    sigChangeARCFactor = QtCore.Signal(float)
+    sigChangeWavelength = QtCore.Signal(float)
     sigChangeLines = QtCore.Signal(int)
     sigChangeMaxLines = QtCore.Signal(int)
     sigSaveMeasurement = QtCore.Signal(str, list, list)
+
+    sigCheckEmission = QtCore.Signal()
+    sigResetARC = QtCore.Signal()
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, **kwargs)
@@ -223,17 +229,27 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self._voltscan_logic.sigScanRangeChanged.connect(self.update_scan_range_DoubleSpinBox)
         self._voltscan_logic.sigPLEfactorChanged.connect(self.update_factor_V_to_GHz_LineEdit)
         self._voltscan_logic.sigLockLaserChanged.connect(self.update_ple_Lock_Laser_CheckBox)
-        #self._voltscan_logic.sigProgressBar.connect(self.update_ProgressBar)
+
+        self._voltscan_logic.ple_progressBar.connect(self.update_ProgressBar)
+        self._voltscan_logic.emissionChanged.connect(self.update_LaserEmissionBar)
+        self._voltscan_logic.ARCFactorChanged.connect(self.update_ARCFactorSpinBox)
+        self._voltscan_logic.sigUpdateWavlength.connect(self.refresh_wavelength)
+
 
         #self.sigStartScan.connect(self._voltscan_logic.start_scanning)
         #self.sigStopScan.connect(self._voltscan_logic.stop_scanning)
         self.sigChangeVoltage.connect(self._voltscan_logic.set_voltage)
         self.sigChangeRange.connect(self._voltscan_logic.set_scan_range)
         self.sigChangeSpeed.connect(self._voltscan_logic.set_scan_speed)
+        self.sigChangeARCFactor.connect(self._voltscan_logic.set_arc_factor)
+        self.sigChangeWavelength.connect(self._voltscan_logic.set_ctl_wavelength)
         self.sigChangeLines.connect(self._voltscan_logic.set_show_lines)
         self.sigChangeMaxLines.connect(self._voltscan_logic.set_scan_lines)
         self.sigChangeResolution.connect(self._voltscan_logic.set_resolution)
         self.sigSaveMeasurement.connect(self._voltscan_logic.save_data)
+
+        self.sigCheckEmission.connect(self._voltscan_logic.check_emission)
+        self.sigResetARC.connect(self._voltscan_logic.set_arc_factor)
 
         ### for loading
         self._load_dialog = LoadDialog(self._mw)
@@ -248,6 +264,20 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self._mw.ple_Stop_Button.setEnabled(False)
 
         self._mw.resolutionSpinBox.setValue(self._voltscan_logic.stepsize)
+
+        # for CTL option:
+        laser_choice = ['DLC Pro CTL', 'DLC Pro 917']
+        channel_choice = ['Fine In 1', 'Fine In 2',"Fast In 3","Fast In 4"]
+        tuning_choice = ["PiezoControl","MotorControl"]
+        for n, ch in enumerate(laser_choice):
+            self._mw.laser_comboBox.addItem(str(ch), n)
+        self._mw.laser_comboBox.activated.connect(self.select_laser)
+        for n, ch in zip([0,1,2,4],channel_choice):
+            self._mw.input_channel_comboBox.addItem(str(ch), n)
+        self._mw.input_channel_comboBox.activated.connect(self.select_channel)
+        for n, ch in enumerate(tuning_choice):
+            self._mw.tuning_mode_comboBox.addItem(str(ch), n)
+        self._mw.tuning_mode_comboBox.activated.connect(self.select_mode)
 
 
         self._mw.show()
@@ -329,6 +359,12 @@ class VoltScanGui(GUIBase, ple_default_functions):
         
     def refresh_current_freq(self):
         self._mw.current_freq_Label.setText(str(self._voltscan_logic.current_freq))
+    # def change_current_arc_factor(self):
+    #     self._mw.current_arc_factor_label.setText(str(self._voltscan_logic.arc_factor_label))
+    def update_ARCFactorSpinBox(self,val):
+        self._mw.ARCFactorSpinBox.setValue(val)
+    # def update_WavelengthdoubleSpinBox(self,val):
+    #     self._mw.WavelengthdoubleSpinBox.setValue(val)
 
     def refresh_plot(self):
         """ Refresh the xy-plot image """
@@ -402,6 +438,9 @@ class VoltScanGui(GUIBase, ple_default_functions):
     def refresh_lines(self):
         self._mw.elapsed_lines_DisplayWidget.display(self._voltscan_logic._scan_counter_up)
 
+    def refresh_wavelength(self):
+        self._mw.wavelength_DisplayWidget.display(self._voltscan_logic.ctl_wavelength)
+
     def change_voltage(self,tmp=0):
         self.sigChangeVoltage.emit(self._mw.constDoubleSpinBox.value())
 
@@ -413,6 +452,10 @@ class VoltScanGui(GUIBase, ple_default_functions):
 
     def change_speed(self,tmp=0):
         self.sigChangeSpeed.emit(self._mw.speedDoubleSpinBox.value())
+    def change_arc_factor(self,tmp=0):
+        self.sigChangeARCFactor.emit(self._mw.ARCFactorSpinBox.value())
+    def change_wavelength(self,tmp=0):
+        self.sigChangeWavelength.emit(self._mw.WavelengthdoubleSpinBox.value())
 
     def change_stop_volt(self,tmp=0):
         self.sigChangeRange.emit([
@@ -475,9 +518,52 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self._mw.ple_Lock_Laser_CheckBox.setChecked(val)
 
     def update_ProgressBar(self, val, scan_dur):
-        print("Update ProgressBar: ", val)
-        self._mw.ple_ProgressBar.setRange(0, scan_dur)
-        self._mw.ple_ProgressBar.setValue(val)
+        # print("Update ProgressBar (GUI): ", val, scan_dur)
+        self._mw.ple_progressBar.setRange(0, scan_dur)
+        self._mw.ple_progressBar.setValue(val)
+
+    def update_LaserEmissionBar(self, val_ctl, val_dlc):
+        if self._voltscan_logic.laser_choice == 0:
+            val = val_ctl
+        elif self._voltscan_logic.laser_choice == 1:
+            val = val_dlc
+        self._mw.laserstatus_progressBar.setRange(0, 1)
+        self._mw.laserstatus_progressBar.setValue(val)
+    
+    def select_laser(self, index):
+        self._voltscan_logic.laser_choice = int(self._mw.laser_comboBox.itemData(index, QtCore.Qt.UserRole))
+        i = self._voltscan_logic.laser_choice
+        print(f"PLE laser changed to {i} : {dict({0:'CTL',1:'DLC Pro'})[i]}")
+        self.sigCheckEmission.emit()
+        self.sigResetARC.emit()
+        if i == 0:
+            self._mw.tuning_mode_comboBox.setEnabled(True)
+            self._mw.WavelengthdoubleSpinBox.setEnabled(True)
+        elif i == 1:
+            self._mw.tuning_mode_comboBox.setEnabled(False)
+            self._mw.tuning_mode_comboBox.setCurrentIndex(0)
+            self._mw.WavelengthdoubleSpinBox.setEnabled(False)
+            self._mw.WavelengthdoubleSpinBox.setEnabled(False)
+            self.select_mode(0)
+
+    
+    def select_channel(self, index):
+        self._voltscan_logic.input_channel = int(self._mw.input_channel_comboBox.itemData(index, QtCore.Qt.UserRole))
+        i = self._voltscan_logic.input_channel
+        print(f"PLE voltage channel changed to {i} : {dict({0:'Fine In 1',1:'Fine In 2',2:'Fast In 3',4:'Fast In 4'})[i]}")
+        self.sigCheckEmission.emit()
+        self.sigResetARC.emit()
+
+    def select_mode(self, index):
+        self._voltscan_logic.tuning_mode = int(self._mw.tuning_mode_comboBox.itemData(index, QtCore.Qt.UserRole))
+        i = self._voltscan_logic.tuning_mode
+        print(f"PLE tuning methode changed to {i} : {dict({0:'PiezoControl',1:'MotorControl'})[i]}")
+        self.sigCheckEmission.emit()
+        self.sigResetARC.emit()
+        if i == 0:
+            self._mw.current_arc_factor_label.setText(str("ARC Factor (V/V):"))
+        elif i == 1:
+            self._mw.current_arc_factor_label.setText(str("ARC Factor (nm/V):"))
 
     
     def disable_scan_actions(self):
@@ -485,6 +571,7 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self._mw.ple_Stop_Button.setEnabled(True)
         self._mw.ple_Continue_Button.setEnabled(False)
         self._mw.ple_Load_Button.setEnabled(False)
+        self._mw.toggle_emission_Button.setEnabled(False)
         self._mw.factor_V_to_GHz_pushButton.setEnabled(False)
     
     def enable_scan_actions(self):
@@ -492,4 +579,5 @@ class VoltScanGui(GUIBase, ple_default_functions):
         self._mw.ple_Stop_Button.setEnabled(False)
         self._mw.ple_Continue_Button.setEnabled(True)
         self._mw.ple_Load_Button.setEnabled(True)
+        self._mw.toggle_emission_Button.setEnabled(True)
         self._mw.factor_V_to_GHz_pushButton.setEnabled(True)

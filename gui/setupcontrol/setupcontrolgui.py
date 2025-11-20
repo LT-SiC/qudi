@@ -33,6 +33,8 @@ from qtpy import QtCore
 from qtpy import QtWidgets
 from qtpy import uic
 
+from logic.setup_control_logic import SetupControlLogic
+
 
 class SetupControlWindow(QtWidgets.QMainWindow):
     """ Create the Main Window based on the *.ui file. """
@@ -76,7 +78,7 @@ class SetupControlGUI(GUIBase):
         """ Definition and initialisation of the GUI plus staring the measurement.
         """
 
-        self._setupcontrol_logic = self.setupcontrollogic() 
+        self._setupcontrol_logic:SetupControlLogic = self.setupcontrollogic() 
 
         #####################
         # Configuring the dock widgets
@@ -91,6 +93,14 @@ class SetupControlGUI(GUIBase):
         self._mw.Repump_Button.clicked.connect(self._setupcontrol_logic.Repump_Button_Clicked)
         self._mw.CTL_Button.clicked.connect(self._setupcontrol_logic.CTL_Button_Clicked)
         self._mw.Blue_Button.clicked.connect(self._setupcontrol_logic.Blue_Button_Clicked)
+        self._mw.Light_Button.clicked.connect(self._setupcontrol_logic.Light_Button_Clicked)
+        self._mw.TopSpectrum_Button.clicked.connect(self._setupcontrol_logic.TopSpectrum_Button_Clicked)
+        self._mw.FiberSpectrum_Button.clicked.connect(self._setupcontrol_logic.FiberSpectrum_Button_Clicked)
+        self._mw.Excitation_Button.clicked.connect(self._setupcontrol_logic.Excitation_Button_Clicked)
+        self._mw.disableFiber_pushButton.clicked.connect(self._setupcontrol_logic.disableFiber_pushButton_Clicked)
+        self._mw.disableTop_pushButton.clicked.connect(self._setupcontrol_logic.disableTop_pushButton_Clicked)
+        self._mw.TwoPLE_Button.clicked.connect(self._setupcontrol_logic.TwoPLE_Button_Clicked)
+        self._mw.PLELaser_Button.clicked.connect(self.PLELaser_Button_Clicked)
         self._mw.MW1_on_Button.clicked.connect(self._setupcontrol_logic.MW1_on_Button_Clicked)
         self._mw.MW1_power_DoubleSpinBox.valueChanged.connect(self._setupcontrol_logic.MW1_power_DoubleSpinBox_Edited)
         self._mw.MW1_freq_DoubleSpinBox.valueChanged.connect(self._setupcontrol_logic.MW1_freq_DoubleSpinBox_Edited)
@@ -103,15 +113,20 @@ class SetupControlGUI(GUIBase):
         self._mw.Set_A2Power_DoubleSpinBox.valueChanged.connect(self._setupcontrol_logic.Set_A2Power_DoubleSpinBox_Edited)
         self._mw.Set_A2Power_Button.clicked.connect(self._setupcontrol_logic.Set_A2Power_Button_Clicked)
         self._mw.Set_A1Power_DoubleSpinBox.valueChanged.connect(self._setupcontrol_logic.Set_A1Power_DoubleSpinBox_Edited)
+        self._mw.Set_RepumpPower_DoubleSpinBox.valueChanged.connect(self._setupcontrol_logic.Set_RepumpPower_DoubleSpinBox_Edited)
         self._mw.Set_A1Power_Button.clicked.connect(self._setupcontrol_logic.Set_A1Power_Button_Clicked)
+        self._mw.Set_RepumpPower_Button.clicked.connect(self._setupcontrol_logic.Set_RepumpPower_Button_Clicked)
+        self._mw.Set_CTLPower_DoubleSpinBox.valueChanged.connect(self._setupcontrol_logic.Set_CTLPower_DoubleSpinBox_Edited)
+        self._mw.Set_CTLPower_Button.clicked.connect(self._setupcontrol_logic.Set_CTLPower_Button_Clicked)
         self._mw.Read_A2Power_Button.clicked.connect(self._setupcontrol_logic.Read_A2Power_Button_Clicked)
         self._mw.Read_A1Power_Button.clicked.connect(self._setupcontrol_logic.Read_A1Power_Button_Clicked)
+        self._mw.Read_CTLPower_Button.clicked.connect(self._setupcontrol_logic.Read_CTLPower_Button_Clicked)
         self._mw.Autofocus_Button.clicked.connect(self._setupcontrol_logic.Autofocus_Button_Clicked)
-        self._mw.Flipmirror_Button.clicked.connect(self._setupcontrol_logic.Flipmirror_Button_Clicked)
+        # self._mw.Flipmirror_Button.clicked.connect(self._setupcontrol_logic.Flipmirror_Button_Clicked)
         self._mw.StartAutoMeas_Button.clicked.connect(self._setupcontrol_logic.StartAutoMeas_Button_Clicked)
         self._mw.StopAutoMeas_Button.clicked.connect(self._setupcontrol_logic.StopAutoMeas_Button_Clicked)
         self._mw.SavePOIs_Button.clicked.connect(self._setupcontrol_logic.SavePOIs_Button_Clicked)
-        #self._setupcontrol_logic.SigReadPower.connect(self.update_laserpower, QtCore.Qt.QueuedConnection)
+        self._setupcontrol_logic.SigReadPowerDone.connect(self.update_laserpower, QtCore.Qt.QueuedConnection)
         
         self._mw.MW1_power_DoubleSpinBox.setValue(self._setupcontrol_logic.MW1_power)
         self._mw.MW3_freq_DoubleSpinBox.setValue(self._setupcontrol_logic.MW3_freq)
@@ -121,11 +136,17 @@ class SetupControlGUI(GUIBase):
         self._mw.MW1_freq_DoubleSpinBox.setValue(self._setupcontrol_logic.MW1_freq)
         self._mw.Set_A2Power_DoubleSpinBox.setValue(self._setupcontrol_logic.AOM_A2_volt)
         self._mw.Set_A1Power_DoubleSpinBox.setValue(self._setupcontrol_logic.AOM_A1_volt)
+        self._mw.Set_RepumpPower_DoubleSpinBox.setValue(self._setupcontrol_logic.cobolt_power)
+        self._mw.Set_CTLPower_DoubleSpinBox.setValue(self._setupcontrol_logic.AOM_CTL_volt)
 
         # self._mw.Read_Power_Label.setText(str(self._setupcontrol_logic.read_power))
         
-    # def update_laserpower(self):
-    #     self._mw.Read_Power_Label.setText(str(self._setupcontrol_logic.read_power))
+    def update_laserpower(self, ch, p, p_t):
+        label = {1:self._mw.Read_A1Power_Label,2:self._mw.Read_A2Power_Label,3:self._mw.Read_CTLPower_Label}[ch]
+        label_t = {1:self._mw.Read_A1Power_Label_t,2:self._mw.Read_A2Power_Label_t,3:self._mw.Read_CTLPower_Label_t}[ch]
+        {1:self._setupcontrol_logic.AOM_A1_pow,2:self._setupcontrol_logic.AOM_A2_pow,3:self._setupcontrol_logic.AOM_CTL_pow}[ch] = p
+        label.setText(f"{p:.1f} nW")
+        label_t.setText(f"{p_t:.1f} nW")
 
 
     def on_deactivate(self):
@@ -136,6 +157,14 @@ class SetupControlGUI(GUIBase):
         self._mw.Repump_Button.clicked.disconnect()
         self._mw.CTL_Button.clicked.disconnect()
         self._mw.Blue_Button.clicked.disconnect()
+        self._mw.Light_Button.clicked.disconnect()
+        self._mw.TopSpectrum_Button.clicked.disconnect()
+        self._mw.FiberSpectrum_Button.clicked.disconnect()
+        self._mw.Excitation_Button.clicked.disconnect()
+        self._mw.disableFiber_pushButton.clicked.disconnect()
+        self._mw.disableTop_pushButton.clicked.disconnect()
+        self._mw.TwoPLE_Button.clicked.disconnect()
+        self._mw.PLELaser_Button.clicked.disconnect()
         self._mw.MW1_on_Button.clicked.disconnect()
         self._mw.MW1_power_DoubleSpinBox.valueChanged.disconnect()
         self._mw.MW1_freq_DoubleSpinBox.valueChanged.disconnect()
@@ -148,11 +177,15 @@ class SetupControlGUI(GUIBase):
         self._mw.Set_A2Power_DoubleSpinBox.valueChanged.disconnect()
         self._mw.Set_A2Power_Button.clicked.disconnect()
         self._mw.Set_A1Power_DoubleSpinBox.valueChanged.disconnect()
+        self._mw.Set_RepumpPower_DoubleSpinBox.valueChanged.disconnect()
         self._mw.Set_A1Power_Button.clicked.disconnect()
+        self._mw.Set_RepumpPower_Button.clicked.disconnect()
+        self._mw.Set_CTLPower_DoubleSpinBox.valueChanged.disconnect()
+        self._mw.Set_CTLPower_Button.clicked.disconnect()
         self._mw.Read_A2Power_Button.clicked.disconnect()
         self._mw.Read_A1Power_Button.clicked.disconnect()
         self._mw.Autofocus_Button.clicked.disconnect()
-        self._mw.Flipmirror_Button.clicked.disconnect()
+        # self._mw.Flipmirror_Button.clicked.disconnect()
         self._mw.StartAutoMeas_Button.clicked.disconnect()
         self._mw.StopAutoMeas_Button.clicked.disconnect()
         self._mw.SavePOIs_Button.clicked.disconnect()
@@ -214,12 +247,21 @@ class SetupControlGUI(GUIBase):
         self._mw.A2_Button.setCheckable(True)
         self._mw.CTL_Button.setCheckable(True)
         self._mw.Blue_Button.setCheckable(True)
+        self._mw.Light_Button.setCheckable(True)
+        self._mw.TopSpectrum_Button.setCheckable(True)
+        self._mw.FiberSpectrum_Button.setCheckable(True)
+        self._mw.Excitation_Button.setCheckable(True)
+        self._mw.disableFiber_pushButton.setCheckable(True)
+        self._mw.disableTop_pushButton.setCheckable(True)
+        self._mw.TwoPLE_Button.setCheckable(True)
+        self._mw.PLELaser_Button.setCheckable(True)
         self._mw.Repump_Button.setCheckable(True)
         self._mw.MW1_on_Button.setCheckable(True)
         self._mw.MW2_on_Button.setCheckable(True)
         self._mw.MW3_on_Button.setCheckable(True)
         self._mw.Set_A2Power_Button.setCheckable(False)
         self._mw.Set_A1Power_Button.setCheckable(False)
+        self._mw.Set_CTLPower_Button.setCheckable(False)
         # self._mw.PD_zero_Button.setCheckable(True)
         # self._mw.Flipmirror_Button.setCheckable(True)
         # self._mw.Autofocus_Button.setCheckable(True)
@@ -229,6 +271,13 @@ class SetupControlGUI(GUIBase):
         A1duration=self._mw.A1_time_doubleSpinBox.value()
         self._setupcontrol_logic.A1time=A1duration
         print("oh")
+
+    def PLELaser_Button_Clicked(self, on):
+        self._setupcontrol_logic.PLELaser_Button_Clicked(on)
+        if on:
+            self._mw.PLELaser_Button.setText("PLE: DLC")
+        else:
+            self._mw.PLELaser_Button.setText("PLE: CTL")
 
 
 # TODO: Remove POIs button

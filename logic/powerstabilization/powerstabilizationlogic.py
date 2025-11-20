@@ -55,6 +55,8 @@ class PowerStabilizationLogic(GenericLogic, powerstabilization_default):
         self._save_logic:SaveLogic = self.savelogic()
         #self._transition_tracker= self.transition_tracker() # For turning on lasers and Setting Analog PS Output.
         self.SigPidProc.connect(self.pid_processing,type=QtCore.Qt.QueuedConnection)
+
+        self._setupcontrol_logic.SigReadPower.connect(self.return_power,type=QtCore.Qt.QueuedConnection)
         
         self.SigStartPowerCalibration.connect(self.calibrate_power,type=QtCore.Qt.QueuedConnection)
         
@@ -101,6 +103,18 @@ class PowerStabilizationLogic(GenericLogic, powerstabilization_default):
     @Wavelength.deleter
     def Wavelength(self,val):
         del self._Wavelength
+
+    def return_power(self,ch):
+        voltage_offset_f: float = -0.0529 #V
+        voltage_to_power_ratio_f: float = 0.0074 #V/nW
+        voltage_offset_t: float = -0.0625 #V
+        voltage_to_power_ratio_t: float = 0.0002 #V/nW
+        v = np.mean(self._streaming_device.task_in.read(10))
+        p = (v-voltage_offset_f)/voltage_to_power_ratio_f
+        p_t = (v-voltage_offset_t)/voltage_to_power_ratio_t
+        if p < 0:
+            p = 0
+        self._setupcontrol_logic.SigReadPowerDone.emit(ch,p,p_t)
 
     @QtCore.pyqtSlot()
     def calibrate_power(self):

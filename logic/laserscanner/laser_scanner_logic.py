@@ -29,6 +29,7 @@ import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+import os
 
 from core.connector import Connector
 from core.statusvariable import StatusVar
@@ -55,6 +56,7 @@ from logic.confocal_logic import ConfocalLogic
 from logic.save_logic import SaveLogic
 from logic.biaslogic import BiasLogic
 from logic.fit_logic import FitLogic
+from logic.TopticaDLCLogic import CTLLogic, DLCProLogic
 from logic.wavemeter_logger_logic import WavemeterLoggerLogic
 from hardware.national_instruments_x_series import NationalInstrumentsXSeries
 
@@ -72,6 +74,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
     savelogic = Connector(interface='SaveLogic')
     mcas_holder = Connector(interface='McasDictHolderInterface')
     fitlogic = Connector(interface='FitLogic')
+    ctllogic=Connector('CTLLogic')
+    dlcprologic=Connector('DLCProLogic')
     
     wavemeterlogic= Connector(interface="WavemeterLoggerLogic")
     
@@ -107,6 +111,18 @@ class LaserScannerLogic(GenericLogic, ple_default):
     enable_MW2 = StatusVar('enable_MW2', True)
     enable_MW3 = StatusVar('enable_MW3', False)
 
+    arc_factor = StatusVar('arc_factor', 10.)
+    arc_factor_ctl_pc = StatusVar('arc_factor_ctl_pc', 10.)
+    arc_factor_ctl_mc = StatusVar('arc_factor_ctl_mc', 0.01)
+    arc_factor_dlcpro = StatusVar('arc_factor_dlcpro', 15.)
+    ctl_wavelength = StatusVar('ctl_wavelength', 916.489390)
+    laser_choice = StatusVar('laser_choice', 0)
+    input_channel = StatusVar('input_channel', 0)
+    tuning_mode = StatusVar('tuning_mode', 0)
+    ple_progress = StatusVar('ple_progress', 0)
+    laserstatus = StatusVar('laserstatus', 0)
+    automatic_calibration = StatusVar('automatic_calibration', True)
+
     _ch = ConfigOption('default_channel', default=1)
 
 
@@ -122,6 +138,12 @@ class LaserScannerLogic(GenericLogic, ple_default):
     sigScanRangeChanged = QtCore.Signal(float, float)
     sigLockLaserChanged = QtCore.Signal(bool)
     sigPLEfactorChanged = QtCore.Signal(float)
+
+    ARCFactorChanged = QtCore.Signal(float)
+    ple_progressBar = QtCore.Signal(float, float)
+    updateProgressBarSignal = QtCore.Signal()
+    emissionChanged = QtCore.Signal(float, float)
+    sigUpdateWavlength = QtCore.Signal()
     
     # to cut the scan line into smaller parts:
     mode=0
@@ -168,6 +190,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self._awg = self.mcas_holder()
         self._wavemeterlogic: WavemeterLoggerLogic = self.wavemeterlogic()
         self._fit_logic: FitLogic = self.fitlogic()
+        self._ctl_logic: CTLLogic = self.ctllogic()
+        self._dlcpro_logic: DLCProLogic = self.dlcprologic()
         self.a_range = self._scanning_device.get_position_range()[3]
 
         # Initialise the current position of all four scanner channels.
@@ -184,6 +208,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.sigChangeVoltage.connect(self._change_voltage, QtCore.Qt.QueuedConnection)
         self.sigScanNextLine.connect(self._do_next_line, QtCore.Qt.QueuedConnection)
         self.sigFitPerformed.connect(self.goto_fitted_peak, QtCore.Qt.QueuedConnection)
+
+        self.updateProgressBarSignal.connect(self.update_ProgressBar, QtCore.Qt.QueuedConnection)
 
         # Initialization of internal counter for scanning
         self._scan_counter_up = 0
@@ -225,6 +251,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self.interpolated_x_data=np.linspace(0,1,100)
         self.measurement_running = False
         self.factor_V_to_GHz = self._scanning_device._scanner_position_ranges[3][1]
+
+        self.check_emission()
 
     def on_deactivate(self):
         """ Deinitialisation performed during deactivation of the module.
@@ -378,6 +406,39 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self._scan_speed = np.clip(scan_speed, 1e-9, 1e6)
         self._goto_speed = self._scan_speed
 
+    def set_arc_factor(self, arc_factor=None):
+        # """ Set scan speed in volt per second """
+        if arc_factor:
+            self.arc_factor = arc_factor
+        else:
+            if self.laser_choice == 0:
+                if self.tuning_mode == 0:
+                    self.arc_factor = self.arc_factor_ctl_pc
+                elif self.tuning_mode == 1:
+                    self.arc_factor = self.arc_factor_ctl_mc
+            elif self.laser_choice == 1:
+                self.arc_factor = self.arc_factor_dlcpro
+        
+        self.ARCFactorChanged.emit(self.arc_factor)
+        
+        self.write_arc_factor(self.arc_factor)
+
+    def write_arc_factor(self, arc_factor):
+            if self.laser_choice == 0:
+                if self.tuning_mode == 0:
+                    self._ctl_logic.ext_factor(arc_factor)
+                elif self.tuning_mode == 1:
+                    self._ctl_logic.remote_factor(arc_factor)
+            elif self.laser_choice == 1:
+                self._dlcpro_logic.ext_factor(arc_factor)
+
+    def set_ctl_wavelength(self, ctl_wavelength):
+        # """ Set scan speed in volt per second """
+        self._ctl_logic.wavelength(ctl_wavelength)
+        QtTest.QTest.qSleep(1000)
+        self.ctl_wavelength = self._ctl_logic._laser.wavelength_act
+        self.sigUpdateWavlength.emit()
+
     def set_show_lines(self, show_lines):
         self.number_of_lines = int(np.clip(show_lines, 1, 1e6))
     
@@ -428,6 +489,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
         @return int: error code (0:OK, -1:error)
         """
+        
         self._awg.mcas_dict.stop_awgs()
         self.laser_at_position = False
         self.measurement_running = True
@@ -437,7 +499,39 @@ class LaserScannerLogic(GenericLogic, ple_default):
         #     raise Exception    
 
         print("Start PLE scan...")
+        self.ple_progressBar.emit(0,100)
 
+        # for laser integration:
+        self.ctl_wavelength = self._ctl_logic._laser.wavelength_act
+        self.sigUpdateWavlength.emit()
+        self.check_emission()
+        if (self.ctl_emission == False) and (self.dlcpro_emission == False):
+            print("CAREFULL! Resonant lasers are disabled!")
+        if self.laser_choice == 0:
+            if self.tuning_mode == 0:
+                if self._ctl_logic.ext_enabled() == False:
+                    self._ctl_logic.remote_enabled(False)
+                    self._dlcpro_logic.ext_enabled(False)
+                    self._ctl_logic.ext_enabled(True)
+                else:
+                    self._ctl_logic.remote_enabled(False)
+                    self._dlcpro_logic.ext_enabled(False)
+            elif self.tuning_mode == 1:
+                if self._ctl_logic.remote_enabled() == False:
+                    self._ctl_logic.ext_enabled(False)
+                    self._dlcpro_logic.ext_enabled(False)
+                    self._ctl_logic.remote_enabled(True)
+                else:
+                    self._ctl_logic.ext_enabled(False)
+                    self._dlcpro_logic.ext_enabled(False)
+        elif self.laser_choice == 1:
+            if self._dlcpro_logic.ext_enabled() == False:
+                self._ctl_logic.ext_enabled(False)
+                self._ctl_logic.remote_enabled(False)
+                self._dlcpro_logic.ext_enabled(True)
+            else:
+                self._ctl_logic.ext_enabled(False)
+                self._ctl_logic.remote_enabled(False)
 
         # check if nidaq is not already used
         if not(self._scanning_device._scanner_counter_daq_tasks==[] or self._scanning_device._scanner_clock_daq_task==None):
@@ -476,6 +570,14 @@ class LaserScannerLogic(GenericLogic, ple_default):
             self.scan_range[1] = v_max
         else:
             v_max = self.scan_range[1]
+
+        # # in case of motor scan we have to switch the voltages:
+        # if (self.laser_choice == 0) and (self.tuning_mode == 1):
+        #     v_n = v_min.copy()
+        #     v_x = v_max.copy()
+        #     v_min = v_x
+        #     v_max = v_n
+        
 
         self._scan_counter_up = 0
         self.upwards_scan = True
@@ -548,6 +650,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
     def _do_next_line(self):
         """ If stopRequested then finish the scan, otherwise perform next repeat of the scan line
         """
+        self.updateProgressBarSignal.emit()
         # stops scanning
         if (self.stopRequested or (self._scan_counter_up >= self.number_of_repeats and self.number_of_repeats!=0) or ((time.time()-self.starttime) >= self.stoptime and self.stoptime!=0)):
             self._goto_during_scan(self._static_v)
@@ -568,11 +671,19 @@ class LaserScannerLogic(GenericLogic, ple_default):
             self.measurement_running = False
             print("PLE, sigScanFinished emit")
             self.sigScanFinished.emit()
+            if not self._wavemeterlogic._hardware_pull._parentclass._wavelength_data == []:
+                if self.automatic_calibration:
+                    try:
+                        self._estimate_ratio()
+                    except TypeError as e:
+                        print(e)
+            else:
+                print("COULD NOT ESTIMATE RATIO- CAREFULL - WAVEMETER TRAGGING IS WAS NOT RUNNING! YOU MIGHT HAVE TO RESTART QUDI!")
             return
 
         if self._scan_counter_up == 0:
-            # move from current voltage to start of scan range.
-            self._goto_during_scan(self.scan_range[0])
+            # move from current voltage to ende of scan range, to simulate similar conditions for the 1st scan compared to the following. Also improves conversion estimation.
+            self._goto_during_scan(self.scan_range[1])
             if not self._wavemeterlogic._hardware_pull._parentclass._wavelength_data == []:
                 self.reset_wavemeter_time = self._wavemeterlogic._hardware_pull._parentclass._wavelength_data[-1][0]
             else:
@@ -597,7 +708,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
             #get the timestamp from the wavemeter
             self.timestamp_list.append(self._scanning_device.timestamp_list)
-            
+        
 
             #print("PLElogic position during _do_next_line", self._scanning_device.get_scanner_position())
         
@@ -680,6 +791,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
             self.local_counts=[]
             self._scan_counter_up += 1
             self.upwards_scan = False
+            
         
         else: #retrace
             self.sigUpdatePlots.emit()
@@ -702,6 +814,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
             self.upwards_scan = True
             self.start_stop_timestamps=[]
         self.sigScanNextLine.emit()
+        self.updateProgressBarSignal.emit()
 
     def check_if_ionized(self, cts):
         self.ionized=not(np.sum(np.asarray(cts)>self.peak_min_counts))
@@ -1059,7 +1172,14 @@ class LaserScannerLogic(GenericLogic, ple_default):
         parameters['MW2 freq (MHz)'] = self.MW2_Freq
         parameters['MW3 freq (MHz)'] = self.MW3_Freq
         parameters['PLE voltage-factor (V to GHz)'] = self.factor_V_to_GHz
-        parameters['Current fit frequency (GHz)'] = self.curr_freq
+        parameters['Current laser'] = self.laser_choice
+        parameters['Current input channel'] = self.input_channel
+        parameters['Current tuning mode'] = self.tuning_mode
+        parameters['Current ARC factor'] = self.arc_factor
+        parameters['Current CTL wavelength'] = self.ctl_wavelength
+        with open(os.getcwd()+"\\current_temperature.txt","r") as f:
+            self.temperature = float(np.loadtxt(f,skiprows=3))
+        parameters['Sample temperature (K)'] = self.temperature
 
 
         fig = self.draw_figure(
@@ -1319,6 +1439,33 @@ class LaserScannerLogic(GenericLogic, ple_default):
         return str(self.MW1_Power)+str(self.MW2_Power)+str(self.MW3_Power)+str(self.MW1_Freq)+str(self.MW2_Freq)+str(self.MW3_Freq)+str(self.enable_MW1)+str(self.enable_MW2)+str(self.enable_MW3)+str(self.enable_A1)+str(self.enable_A2)+str(self.enable_Repump)+str(self.enable_PulsedRepump)+str(self.enable_CTL)+str(self.enable_PulsedCTL)+str(self.enable_Blue)+str(self.enable_PulsedBlue)+str(self.lock_laser)+str(self.RepumpDuration)+str(self.RepumpDecay)+str(self.CTLDuration)+str(self.CTLDecay)+str(self.BlueDuration)+str(self.BlueDecay)
     
 
+    def toggle_emission(self):
+        if self.laser_choice == 0:
+            if (self._ctl_logic.emission() == False) and (self._ctl_logic.CCemission() == True):
+                print("Emission button is not activated! Enable manually!")
+                pass
+            elif (self._ctl_logic.emission() == False) and (self._ctl_logic.CCemission() == False):
+                self._ctl_logic.CCemission(True)
+                print("Emission of CTL turned ON!")
+            elif (self._ctl_logic.emission() == True) and (self._ctl_logic.CCemission() == True):
+                self._ctl_logic.CCemission(False)
+                print("Emission of CTL turned OFF!")
+
+        elif self.laser_choice == 1:
+            if (self._dlcpro_logic.emission() == False) and (self._dlcpro_logic.CCemission() == True):
+                print("Emission button is not activated! Enable manually!")
+                pass
+            elif (self._dlcpro_logic.emission() == False) and (self._dlcpro_logic.CCemission() == False):
+                self._dlcpro_logic.CCemission(True)
+                print("Emission of DLC Pro turned ON!")
+            elif (self._dlcpro_logic.emission() == True) and (self._dlcpro_logic.CCemission() == True):
+                self._dlcpro_logic.CCemission(False)
+                print("Emission of DLC Pro turned OFF!")
+
+        QtTest.QTest.qSleep(500)  
+        self.check_emission()         
+
+
     ### From here:
     # Take frequency data from wavemeter and extrapolate it
     # Use this extrapolated data as new x-axis for plot and fit
@@ -1378,18 +1525,19 @@ class LaserScannerLogic(GenericLogic, ple_default):
     #         freqmeanline = self.average_freqlines(freqlines)
     #         self.plot_x_frequency = freqmeanline
 
-    # # def update_ProgressBar(self, scan_dur):
-    # #     print("Update ProgressBar: ", scan_dur)
-    # #     start = time.time()
-    # #     while time.time() - start < scan_dur:
-    # #         self.sigProgressBar.emit((time.time() - start)*100, scan_dur*100)
-    # #         QtTest.QTest.qSleep(200)
-    # #         #QtCore.QThread.msleep(200)
-    # #     self.sigProgressBar.emit(100, 100)
+    @QtCore.Slot()
+    def update_ProgressBar(self):
+        scan_counter,number_of_repeats = self._scan_counter_up,self.number_of_repeats
+        # print("Update ProgressBar (logic): ", scan_counter, number_of_repeats)
+        # print("Update ProgressBar (logic) 2: ", 1.*scan_counter/number_of_repeats*100, 100)
+        self.ple_progressBar.emit(1.*scan_counter/number_of_repeats*100, 100)
+
+    def check_emission(self):
+        self.ctl_emission = self._ctl_logic.emission()
+        self.dlcpro_emission = self._dlcpro_logic.emission()
+        self.emissionChanged.emit(self.ctl_emission,self.dlcpro_emission)
 
     ########### for live PLE analysis with the wavemeter:   
-    
-
     def find_freq_extrema(self, data, num):
         """finds and returns all desired extrema of each scan
 
@@ -1541,8 +1689,12 @@ class LaserScannerLogic(GenericLogic, ple_default):
         # if not WAVEMETER:
         #     self.success = "no WM found!"
         #     pass
-        # else:            
-        res = self.extract_freqlines(self.measured_frequencies[:,1],self.plot_x,self._scan_counter_up)
+        # else:        
+        # in case of motor scan we have to switch the voltages:
+        if (self.laser_choice == 0) and (self.tuning_mode == 1):
+            res = self.extract_freqlines(self.measured_frequencies[:,1][::-1],self.plot_x,self._scan_counter_up)
+        else:
+            res = self.extract_freqlines(self.measured_frequencies[:,1],self.plot_x,self._scan_counter_up)
         self.factor_V_to_GHz = float(f"{res[0]:.3f}")
         # self.F0 = res[1]
         print(f"Calibration done! New factor_V_to_GHz value is {res[0]}")

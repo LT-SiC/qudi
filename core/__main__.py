@@ -222,7 +222,7 @@ class AppWatchdog(QtCore.QObject):
             manager.tm.quitAllThreads()
             QtCore.QCoreApplication.instance().processEvents()
             logger.info('Qudi is closed!  Ciao.')
-            print('\n  Qudi is closed!  Ciao. Cacao.')
+            print("\n  Qudi is closed!  Ciao, Cacao! Gut' Nacht, bis 8! Tschöö mit Ö! ")
         QtCore.QCoreApplication.instance().quit()
 
 

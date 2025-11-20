@@ -6,118 +6,20 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>800</width>
-    <height>600</height>
+    <width>666</width>
+    <height>645</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>qudi: Slow Counter</string>
   </property>
-  <widget class="QWidget" name="centralwidget">
-   <widget class="QDockWidget" name="trace_selection_DockWidget">
-    <property name="geometry">
-     <rect>
-      <x>20</x>
-      <y>0</y>
-      <width>421</width>
-      <height>109</height>
-     </rect>
-    </property>
-    <property name="floating">
-     <bool>true</bool>
-    </property>
-    <property name="windowTitle">
-     <string>Trace Selection</string>
-    </property>
-    <widget class="QWidget" name="dockWidgetContents_3">
-     <widget class="QWidget" name="horizontalLayoutWidget">
-      <property name="geometry">
-       <rect>
-        <x>-1</x>
-        <y>0</y>
-        <width>421</width>
-        <height>109</height>
-       </rect>
-      </property>
-      <layout class="QHBoxLayout" name="horizontalLayout_2">
-       <item>
-        <widget class="QCheckBox" name="trace_1_checkbox">
-         <property name="text">
-          <string>Trace 1</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QCheckBox" name="trace_2_checkbox">
-         <property name="text">
-          <string>Trace 2</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QCheckBox" name="trace_3_checkbox">
-         <property name="text">
-          <string>Trace 3</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <widget class="QCheckBox" name="trace_4_checkbox">
-         <property name="text">
-          <string>Trace 4</string>
-         </property>
-        </widget>
-       </item>
-       <item>
-        <layout class="QVBoxLayout" name="verticalLayout_2">
-         <item>
-          <widget class="QLabel" name="show_couts_label">
-           <property name="text">
-            <string>Show counts from:</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QRadioButton" name="trace_1_radiobutton">
-           <property name="text">
-            <string>Trace 1</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QRadioButton" name="trace_2_radiobutton">
-           <property name="text">
-            <string>Trace 2</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QRadioButton" name="trace_3_radiobutton">
-           <property name="text">
-            <string>Trace 3</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QRadioButton" name="trace_4_radiobutton">
-           <property name="text">
-            <string>Trace 4</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </item>
-      </layout>
-     </widget>
-    </widget>
-   </widget>
-  </widget>
+  <widget class="QWidget" name="centralwidget"/>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>800</width>
+     <width>666</width>
      <height>21</height>
     </rect>
    </property>
@@ -180,6 +82,25 @@
     </layout>
    </widget>
   </widget>
+  <widget class="QToolBar" name="counting_control_ToolBar">
+   <property name="enabled">
+    <bool>true</bool>
+   </property>
+   <property name="windowTitle">
+    <string>Counting Controls</string>
+   </property>
+   <property name="toolButtonStyle">
+    <enum>Qt::ToolButtonTextUnderIcon</enum>
+   </property>
+   <attribute name="toolBarArea">
+    <enum>TopToolBarArea</enum>
+   </attribute>
+   <attribute name="toolBarBreak">
+    <bool>false</bool>
+   </attribute>
+   <addaction name="start_counter_Action"/>
+   <addaction name="record_counts_Action"/>
+  </widget>
   <widget class="QDockWidget" name="slow_counter_parameters_DockWidget">
    <property name="maximumSize">
     <size>
@@ -191,7 +112,7 @@
     <string>Slow counter control</string>
    </property>
    <attribute name="dockWidgetArea">
-    <number>8</number>
+    <number>1</number>
    </attribute>
    <widget class="QWidget" name="dockWidgetContents_2">
     <layout class="QHBoxLayout" name="horizontalLayout">
@@ -274,24 +195,126 @@ Timestamps in oversampling interval are all equal to the averaging time.</string
     </layout>
    </widget>
   </widget>
-  <widget class="QToolBar" name="counting_control_ToolBar">
-   <property name="enabled">
-    <bool>true</bool>
+  <widget class="QDockWidget" name="trace_selection_DockWidget">
+   <property name="floating">
+    <bool>false</bool>
    </property>
    <property name="windowTitle">
-    <string>Counting Controls</string>
+    <string>Trace Selection</string>
    </property>
-   <property name="toolButtonStyle">
-    <enum>Qt::ToolButtonTextUnderIcon</enum>
-   </property>
-   <attribute name="toolBarArea">
-    <enum>TopToolBarArea</enum>
+   <attribute name="dockWidgetArea">
+    <number>1</number>
    </attribute>
-   <attribute name="toolBarBreak">
-    <bool>false</bool>
-   </attribute>
-   <addaction name="start_counter_Action"/>
-   <addaction name="record_counts_Action"/>
+   <widget class="QWidget" name="dockWidgetContents_3">
+    <widget class="QWidget" name="horizontalLayoutWidget">
+     <property name="geometry">
+      <rect>
+       <x>0</x>
+       <y>0</y>
+       <width>501</width>
+       <height>117</height>
+      </rect>
+     </property>
+     <layout class="QHBoxLayout" name="horizontalLayout_2">
+      <item>
+       <widget class="QCheckBox" name="trace_1_checkbox">
+        <property name="text">
+         <string>Trace 1</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="trace_2_checkbox">
+        <property name="text">
+         <string>Trace 2</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="trace_3_checkbox">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
+        <property name="text">
+         <string>Trace 3</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="trace_4_checkbox">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
+        <property name="text">
+         <string>Trace 4</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QVBoxLayout" name="verticalLayout_2">
+        <item>
+         <widget class="QLabel" name="show_couts_label">
+          <property name="text">
+           <string>Show counts from:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QGridLayout" name="gridLayout">
+          <item row="1" column="1">
+           <widget class="QRadioButton" name="trace_4_radiobutton">
+            <property name="enabled">
+             <bool>true</bool>
+            </property>
+            <property name="text">
+             <string>Trace 4</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QRadioButton" name="trace_3_radiobutton">
+            <property name="text">
+             <string>Trace 3</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="0">
+           <widget class="QRadioButton" name="trace_1_radiobutton">
+            <property name="text">
+             <string>Trace 1</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QRadioButton" name="trace_2_radiobutton">
+            <property name="text">
+             <string>Trace 2</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QRadioButton" name="trace_sum_radiobutton">
+            <property name="text">
+             <string>Sum</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </widget>
   </widget>
   <action name="start_counter_Action">
    <property name="checkable">

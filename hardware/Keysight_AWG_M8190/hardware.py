@@ -1558,9 +1558,9 @@ class PulseStreamer():
         self.getUnderflow()
 
     def stream(self, seq, n_runs=0, initial=(0,[],0,0), final=(0,[],0,0), underflow=(0,[],0,0), start='IMMEDIATE'):
-        initial=(initial[0],initial[1],self.analog_A2_volt,self.analog_A1_volt)
-        final=(final[0],final[1],self.analog_A2_volt,self.analog_A1_volt)
-        underflow=(underflow[0],underflow[1],self.analog_A2_volt,self.analog_A1_volt)
+        initial=(initial[0],initial[1],self.analog_A2_volt,self.analog_CTL_volt)
+        final=(final[0],final[1],self.analog_A2_volt,self.analog_CTL_volt)
+        underflow=(underflow[0],underflow[1],self.analog_A2_volt,self.analog_CTL_volt)
         # initial=(initial[0],initial[1],self.analog_A2_volt,initial[3])
         # final=(final[0],final[1],self.analog_A2_volt,final[3])
         # underflow=(underflow[0],underflow[1],self.analog_A2_volt,underflow[3])
@@ -1612,7 +1612,7 @@ class PulseStreamerPGProxy(PulseStreamer):
         self._triggered = None
         self._sequence  = None
         self.t_prepolarize = None
-        self.analog_A1_volt=1
+        self.analog_CTL_volt=1
         self.analog_A2_volt=1
 
 
@@ -1681,10 +1681,11 @@ class PulseStreamerPGProxy(PulseStreamer):
         """Convert a pg style sequence to ps style for wide field use (incl. ccd)"""
         #return [(int(t), channels + ['ccd'], 0, 0) for channels, t in sequence]
         #print("converted")
-        return [(int(t), channels, self.analog_A2_volt, self.analog_A1_volt) for channels, t in sequence]
+        # print("Hardware: Pulsestreamer", self.analog_A2_volt, self.analog_CTL_volt)
+        return [(int(t), channels, self.analog_A2_volt, self.analog_CTL_volt) for channels, t in sequence]
 
     def setContinuous(self, channels=[]):
-        self.constant(pulse=(0, channels, self.analog_A2_volt, self.analog_A1_volt))
+        self.constant(pulse=(0, channels, self.analog_A2_volt, self.analog_CTL_volt))
 
     def checkUnderflow(self):
         return self.getUnderflow()
@@ -1693,7 +1694,7 @@ class PulseStreamerPGProxy(PulseStreamer):
         self.constant()
 
     def Light(self):
-        self.constant(pulse=(0, ['repump'], self.analog_A2_volt, self.analog_A1_volt))
+        self.constant(pulse=(0, ['repump'], self.analog_A2_volt, self.analog_CTL_volt))
 
     # compatibility:
     Sequence = setSequence

@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>qudi: Setup Control</string>
+   <string>qudi: Automation</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="horizontalLayout">
@@ -55,7 +55,7 @@
       <item row="8" column="0">
        <widget class="QLabel" name="label_2">
         <property name="text">
-         <string>['move', 'optimize', 'spectrum', 'spectrum']</string>
+         <string>['move', 'optimize', 'spectrum', 'ple1','cw_odmr','arbseq','reset_CTL']</string>
         </property>
        </widget>
       </item>
@@ -123,7 +123,7 @@
       <item row="10" column="0">
        <widget class="QLineEdit" name="SaveFolder_lineEdit">
         <property name="text">
-         <string>E:\data_newPC\2024</string>
+         <string>E:\data_newPC\2025</string>
         </property>
        </widget>
       </item>

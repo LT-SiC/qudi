@@ -27,6 +27,7 @@ import datetime
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import os
 
 from PyQt5 import QtTest
 
@@ -262,6 +263,7 @@ class ConfocalLogic(GenericLogic):
     # declare connectors
     confocalscanner1 = Connector(interface='ConfocalScannerInterface')
     savelogic = Connector(interface='SaveLogic')
+    
 
     # pois
     pois = StatusVar('pois', [])
@@ -269,7 +271,7 @@ class ConfocalLogic(GenericLogic):
     # status vars
     _clock_frequency = StatusVar('clock_frequency', 500)
     return_slowness = StatusVar(default=50)
-    max_history_length = StatusVar(default=10)
+    max_history_length = StatusVar(default=30)
     _smoothing_steps = StatusVar('smoothing_steps', 10)  # steps to accelerate between 0 and scan_speed
     # signals
     signal_start_scanning = QtCore.Signal(str)
@@ -300,6 +302,7 @@ class ConfocalLogic(GenericLogic):
 
     #signals to gui
     sigLimitsChanged = QtCore.Signal()
+    sigAutoSaveXYplot = QtCore.Signal(str)
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, **kwargs)
@@ -321,11 +324,13 @@ class ConfocalLogic(GenericLogic):
         """
         self._scanning_device: NationalInstrumentsXSeries = self.confocalscanner1()
         self._save_logic: SaveLogic = self.savelogic()
+        self.measurement_running = False
 
         # Reads in the maximal scanning range. The unit of that scan range is micrometer!
         self.x_range = self._scanning_device.get_position_range()[0]
         self.y_range = self._scanning_device.get_position_range()[1]
         self.z_range = self._scanning_device.get_position_range()[2]
+        # self.z_range = [0,0]#self._scanning_device.get_position_range()[2]
 
         # initialize crosshair posi as zero, will be changed once crosshair is moved
         self.crosshair_posi = [0,0,0]
@@ -365,6 +370,7 @@ class ConfocalLogic(GenericLogic):
 
         self._signal_save_xy.connect(self._save_xy_data, QtCore.Qt.QueuedConnection)
         self._signal_save_depth.connect(self._save_depth_data, QtCore.Qt.QueuedConnection)
+
 
         # connect signals to hardware
         self.sigChangeLimits.connect(self._scanning_device.set_voltage_limits)
@@ -447,6 +453,7 @@ class ConfocalLogic(GenericLogic):
         else:
             self._xyscan_continuable = True
 
+        self.measurement_running = True
         self.signal_start_scanning.emit(tag)
         return 0
 
@@ -472,8 +479,9 @@ class ConfocalLogic(GenericLogic):
             if self.module_state() == 'locked':
                 self.stopRequested = True
         self.signal_stop_scanning.emit()
+        self.measurement_running = False
         return 0
-
+    
     def initialize_image(self):
         """Initalization of the image.
 
@@ -837,6 +845,7 @@ class ConfocalLogic(GenericLogic):
                     np.linspace(current_pos[0], self._current_x,rs),
                     np.linspace(current_pos[1], self._current_y,rs),
                     np.linspace(current_pos[2], self._current_z,rs),
+                    # np.ones(rs) * current_pos[2],
                     np.ones(rs) * current_pos[3]
                 ])
         line_counts = self._scanning_device.scan_line(return_line)
@@ -889,6 +898,7 @@ class ConfocalLogic(GenericLogic):
                     np.linspace(current_pos[0], crosshair_pos[0],rs),
                     np.linspace(current_pos[1], crosshair_pos[1],rs),
                     np.linspace(current_pos[2], crosshair_pos[2],rs),
+                    # np.ones(npointsshape) * current_pos[2], #no idea what _current_a does, just copied from below
                     np.ones(npointsshape) * current_pos[3] #no idea what _current_a does, just copied from below
                 ])
             return_line_counts = self._scanning_device.scan_line(return_line)
@@ -927,9 +937,11 @@ class ConfocalLogic(GenericLogic):
                 lsy = np.linspace(self._current_y, image[self._scan_counter, 0, 1], rs)
                 lsz = np.linspace(self._current_z, image[self._scan_counter, 0, 2], rs)
                 if n_ch <= 3:
+                    lsz = np.linspace(self._current_z, image[self._scan_counter, 0, 2], rs)
                     start_line = np.vstack([lsx, lsy, lsz][0:n_ch])
                 else:
                     start_line = np.vstack(
+                        # [lsx, lsy, np.ones(lsx.shape) * current_pos[2], np.ones(lsx.shape) * current_pos[3]])
                         [lsx, lsy, lsz, np.ones(lsx.shape) * current_pos[3]])
                 # move to the start position of the scan, counts are thrown away
                 start_line_counts = self._scanning_device.scan_line(start_line)
@@ -948,9 +960,11 @@ class ConfocalLogic(GenericLogic):
             lsy = image[self._scan_counter, :, 1]
             lsz = image[self._scan_counter, :, 2]
             if n_ch <= 3:
+                lsz = image[self._scan_counter, :, 2]
                 line = np.vstack([lsx, lsy, lsz][0:n_ch])
             else:
                 line = np.vstack(
+                    # [lsx, lsy, np.ones(lsx.shape) * current_pos[3], np.ones(lsx.shape) * current_pos[3]])
                     [lsx, lsy, lsz, np.ones(lsx.shape) * current_pos[3]])
 
             # scan the line in the scan
@@ -996,6 +1010,7 @@ class ConfocalLogic(GenericLogic):
                             self._return_XL,
                             image[self._scan_counter, 0, 1] * np.ones(self._return_XL.shape),
                             image[self._scan_counter, 0, 2] * np.ones(self._return_XL.shape),
+                            # np.ones(self._return_XL.shape) * current_pos[2],
                             np.ones(self._return_XL.shape) * current_pos[3]
                         ])
                 else: # if in last line
@@ -1015,6 +1030,7 @@ class ConfocalLogic(GenericLogic):
                             np.linspace(current_pos[0], crosshair_pos[0],npoints),
                             np.linspace(current_pos[1], crosshair_pos[1],npoints),
                             np.linspace(current_pos[2], crosshair_pos[2],npoints),
+                            # np.ones(npointsshape) * current_pos[2], #no idea what _current_a does, just copied from above
                             np.ones(npointsshape) * current_pos[3] #no idea what _current_a does, just copied from above
                         ])
             else:
@@ -1029,6 +1045,7 @@ class ConfocalLogic(GenericLogic):
                             image[self._scan_counter, 0, 1] * np.ones(self._return_YL.shape),
                             self._return_YL,
                             image[self._scan_counter, 0, 2] * np.ones(self._return_YL.shape),
+                            # np.ones(self._return_YL.shape) * current_pos[2],
                             np.ones(self._return_YL.shape) * current_pos[3]
                         ])
 
@@ -1124,6 +1141,9 @@ class ConfocalLogic(GenericLogic):
 
         parameters['Clock frequency of scanner (Hz)'] = self._clock_frequency
         parameters['Return Slowness (Steps during retrace line)'] = self.return_slowness
+        with open(os.getcwd()+"\\current_temperature.txt","r") as f:
+            self.temperature = float(np.loadtxt(f,skiprows=3))
+        parameters['Sample temperature (K)'] = self.temperature
         if info_params is not None:
             parameters.update(dict(info_params))
             self._save_logic.current_setup_parameters['current_path'] = filepath

@@ -142,13 +142,14 @@ class ScannerTiltInterfuse(GenericLogic, ConfocalScannerInterface):
             clock_channel,
             scanner_ao_channels)
 
-    def scanner_set_position(self, x=None, y=None, z=None, a=None):
-        """Move stage to x, y, z, a (where a is the fourth voltage channel).
+    def scanner_set_position(self, x=None, y=None, ctl=None, dlc=None, z=None):
+        """Move stage to x, y, ctl, dlc, z (where a is the fourth voltage channel).
 
         @param float x: postion in x-direction (volts)
         @param float y: postion in y-direction (volts)
+        @param float z: postion in ctl-direction (volts)
+        @param float a: postion in dlc-direction (volts)
         @param float z: postion in z-direction (volts)
-        @param float a: postion in a-direction (volts)
 
         @return int: error code (0:OK, -1:error)
         """
@@ -161,9 +162,9 @@ class ScannerTiltInterfuse(GenericLogic, ConfocalScannerInterface):
                 self.log.warning(
                     'The entered z position is out of scanner '
                     'range! z was set to min/max.')
-            return self._scanning_device.scanner_set_position(x, y, z, a)
+            return self._scanning_device.scanner_set_position(x, y, ctl, dlc, z)
         else:
-            return self._scanning_device.scanner_set_position(x, y, z, a)
+            return self._scanning_device.scanner_set_position(x, y, ctl, dlc, z)
 
     def get_scanner_position(self):
         """ Get the current position of the scanner hardware.

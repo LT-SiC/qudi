@@ -205,3 +205,9 @@ class TimeTaggerInterface(metaclass=InterfaceMetaclass):
         filename, channels)
         """
         pass
+    @abstract_interface_method
+    def stream(self, **kwargs):
+        """
+        return TimeTagStream(self.tagger,n_max_events,channels)
+        """
+        pass

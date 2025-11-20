@@ -2,7 +2,7 @@
 from os.path import join, getsize, isfile
 import numpy as np
 #from TimeTagger import createTimeTagger, Dump, Correlation, Histogram, Counter, CountBetweenMarkers, FileWriter, Countrate, Combiner, TimeDifferences
-from TimeTagger import createTimeTagger, Dump, Correlation, Histogram, Counter, CountBetweenMarkers, Countrate, Combiner, TimeDifferences
+from TimeTagger import createTimeTagger, Dump, Correlation, Histogram, Counter, CountBetweenMarkers, Countrate, Combiner, TimeDifferences, TimeTagStream
 from core.configoption import ConfigOption
 from core.module import Base
 
@@ -15,6 +15,7 @@ class TT(Base, TimeTaggerInterface):
     _corr = ConfigOption('corr', False, missing='warn')
     _combiner = ConfigOption('combiner', False, missing='warn')
     _counter = ConfigOption('counter', False, missing='warn')
+    _stream = ConfigOption('stream', False, missing='warn')
     _test_channels = ConfigOption('test_channels', False, missing='warn')
     _channels_params = ConfigOption('channels_params', False, missing='warn')
     _count_between_markers = ConfigOption('count_between_markers', False, missing='warn')
@@ -144,8 +145,8 @@ class TT(Base, TimeTaggerInterface):
         refresh_rate - number of samples per second:
 
         """
-        self.tagger.setTriggerLevel(0,0.05)
-        self.tagger.setTriggerLevel(1,0.05)
+        self.tagger.setTriggerLevel(0,0.08)
+        self.tagger.setTriggerLevel(1,0.04)
         self.tagger.setTriggerLevel(2,0.05)
         for key, value in kwargs.items():
             if key in self._counter.keys():
@@ -185,6 +186,9 @@ class TT(Base, TimeTaggerInterface):
         pass
         # return FileWriter(self.tagger,
         # filename, channels)
+
+    def stream(self, *kwargs):
+        return TimeTagStream(self.tagger, self._stream["n_max_events"], self._stream["channels"])
 
 
 class TT_dummy(Base, TimeTaggerInterface):
@@ -268,4 +272,7 @@ class TT_dummy(Base, TimeTaggerInterface):
         pass
 
     def write_into_file(self, filename, channels):
+        pass
+
+    def stream(self, *kwargs):
         pass

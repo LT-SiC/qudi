@@ -86,6 +86,19 @@ class initialize_connections_and_defaultvalue:
         
         self._mw.current_freq_Label.setText(str(self._voltscan_logic.current_freq))
 
+        # CTL & DCL Pro laser:
+        # self._mw.current_arc_factor_label.setText(str(self._voltscan_logic.arc_factor_label))
+        self._mw.ARCFactorSpinBox.valueChanged.connect(self.change_arc_factor)
+        self._mw.ARCFactorSpinBox.setValue(self._voltscan_logic.arc_factor)
+        self._mw.WavelengthdoubleSpinBox.valueChanged.connect(self.change_wavelength)
+        self._mw.WavelengthdoubleSpinBox.setValue(self._voltscan_logic.ctl_wavelength)
+        self._mw.toggle_emission_Button.clicked.connect(self._voltscan_logic.toggle_emission_Button_Clicked)
+        self._mw.ple_progressBar.setValue(self._voltscan_logic.ple_progress)
+        self._mw.laserstatus_progressBar.setValue(self._voltscan_logic.laserstatus)
+        self._mw.automatic_calibration_checkBox.stateChanged.connect(self._voltscan_logic.automatic_calibration_checkBox_StateChanged)
+        self._mw.automatic_calibration_checkBox.setChecked(self._voltscan_logic.automatic_calibration)
+
+
     def disconnect_all(self):
         self._mw.ple_Load_Button.clicked.disconnect()
         self._mw.ple_PulsedRepump_CheckBox.stateChanged.disconnect()
@@ -122,4 +135,6 @@ class initialize_connections_and_defaultvalue:
         self._mw.factor_V_to_GHz_LineEdit.textEdited.disconnect()
         self._mw.ple_NumberOfPeaks_LineEdit.textEdited.disconnect()
 
+        self._mw.automatic_calibration_checkBox.stateChanged.disconnect()
+        self._mw.toggle_emission_Button.clicked.disconnect()
         

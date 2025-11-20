@@ -1271,7 +1271,7 @@ class NuclearOPs(DataGeneration):
             df = ana_trace.analyze().df ## TRY this for init? This was the code before.
 
 
-            if (df.events == 0).any() and not self.analyze_type == 'consecutive' and df.at[0, 'events'] != 0:
+            if (df.events == 0).all() and not self.analyze_type == 'consecutive' and df.at[0, 'events'] != 0:
                 return True #Means that runn was not succesfull, 0 events, ==> repeat measurements.
             if 'result_num' in df.columns: #if there are multiple readouts of type "result", here step index is important
                 #Why we are going here, because we have only 1 readout anyway, 

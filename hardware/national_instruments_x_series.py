@@ -1169,6 +1169,7 @@ class NationalInstrumentsXSeries(Base, SlowCounterInterface, ConfocalScannerInte
         # whether all channels have been written successfully.
         self._AONwritten = daq.int32()
         # write the voltage instructions for the analog output to the hardware
+        
         daq.DAQmxWriteAnalogF64(
             # write to this task
             self._scanner_ao_task,

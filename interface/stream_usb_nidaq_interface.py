@@ -48,5 +48,14 @@ class StreamUSBNidaqInterface(metaclass=InterfaceMetaclass):
     def goToVoltage(self, V):
         pass
 
+    def MultiplegoToVoltage(self, V):
+        pass
+
+    def goToAOMVoltage(self, V):
+        pass
+
+    def flip(self, pos):
+        pass
+
     def shut_down_streaming(self):
         pass

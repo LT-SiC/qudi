@@ -1,0 +1,4 @@
+# This file should get always the actual cryo temperature measured with the sample thermometer under the sample. 
+#  Then should be also readout by qudi to store it in the savefiles! 
+#  in [K] - Last updated: 2025-11-16 10:23:49
+13.411

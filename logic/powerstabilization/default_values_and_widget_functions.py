@@ -31,13 +31,13 @@ class powerstabilization_default():
                 } 
         voltage_offset: float = voltage_offset_dict[Wavelength]
         voltage_to_power_ratio: float = voltage_to_power_ratio_dict[Wavelength] #V/nW
-        voltage_offset_A1A2: float = 0.0
-        voltage_to_power_ratio_A1A2: float = 0.1402 #V/nW
+        voltage_offset_A1A2: float = -0.0436
+        voltage_to_power_ratio_A1A2: float = 0.0073 #V/nW
         voltage_offset_730: float = 0.041678
         voltage_to_power_ratio_730: float = 1.409e-6 #V/nW
         stabilizing: bool = False
         datapoints : int = 500
-        sleep_time: int = 200
+        sleep_time: int = 100
                 
         @QtCore.pyqtSlot(str)
         def TargetPower_LineEdit_textEdited(self, input):

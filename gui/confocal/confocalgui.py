@@ -45,6 +45,9 @@ from qtpy import uic
 
 from logic.save_logic import SaveLogic
 from logic.confocal_logic import ConfocalLogic
+from logic.laserscanner.duo_laser_scanner_logic import LaserScannerLogic
+# from logic.laserscanner.laser_scanner_logic import LaserScannerLogic
+from logic.odmrlogic.odmr_logic import ODMRLogic_holder
 
 
 class ConfocalMainWindow(QtWidgets.QMainWindow):
@@ -230,6 +233,8 @@ class ConfocalGui(GUIBase):
     confocallogic1 = Connector(interface='ConfocalLogic')
     savelogic = Connector(interface='SaveLogic')
     optimizerlogic1 = Connector(interface='OptimizerLogic')
+    laserscannerlogic = Connector(interface='LaserScannerLogic')
+    odmrlogic = Connector(interface='ODMRLogic_holder')
     #automizedmeasurementlogic = Connector(interface='Automatedmeasurement')
 
     # config options for gui
@@ -264,10 +269,14 @@ class ConfocalGui(GUIBase):
         self._scanning_logic:ConfocalLogic = self.confocallogic1()
         self._save_logic:SaveLogic = self.savelogic()
         self._optimizer_logic = self.optimizerlogic1()
+        self._laser_scanner_logic:LaserScannerLogic = self.laserscannerlogic()
+        self._odmr_logic:ODMRLogic_holder = self.odmrlogic()
+
         # self._scanning_logic.pois = np.array([])
         #self._automized_measurement_logic = self.automizedmeasurementlogic()
         # connecting signals from logic
         self._scanning_logic.sigLimitsChanged.connect(self.limits_changed)
+        self._scanning_logic.sigAutoSaveXYplot.connect(self.save_auto_xy_scan_data_plot)
 
         self._hardware_state = True
 
@@ -284,6 +293,12 @@ class ConfocalGui(GUIBase):
         self._load_dialog.sigLoadXYplot.connect(self.load_xy_scan_data)
         self._load_dialog.sigLoadPoi.connect(self.load_poi_list)
         self.debug = True
+
+        self._laser_scanner_logic.sigScanStarted.connect(self.disable_window, QtCore.Qt.QueuedConnection)
+        self._laser_scanner_logic.sigScanFinished.connect(self.enable_window, QtCore.Qt.QueuedConnection)
+
+        self._laser_scanner_logic.sigScanStarted.connect(self.write_coordinates, QtCore.Qt.QueuedConnection)
+        self._odmr_logic.sigstopODMR.connect(self.write_coordinates, QtCore.Qt.QueuedConnection)
 
     def initMainUI(self):
         """ Definition, configuration and initialisation of the confocal GUI.
@@ -1178,6 +1193,20 @@ class ConfocalGui(GUIBase):
         crosshair_pos = self._scanning_logic.get_position()
         self.sigStartOptimizer.emit(crosshair_pos, 'confocalgui')
 
+    def disable_window(self):
+        self._mw.xy_ViewWidget.setEnabled(False)
+        self.disable_scan_actions()
+        print("Confocal disabled because of PLE!")
+    def enable_window(self):
+        self._mw.xy_ViewWidget.setEnabled(True)
+        self.enable_scan_actions()
+        print("Confocal enabled again!")
+
+    def write_coordinates(self):
+        x,y = self._scanning_logic._current_x,self._scanning_logic._current_y
+        self._laser_scanner_logic.xy_coords = [x,y]
+        self._odmr_logic.xy_coords = [x,y]
+
     def update_crosshair_position_from_logic(self, tag):
         """ Update the GUI position of the crosshair from the logic.
 
@@ -1836,6 +1865,25 @@ class ConfocalGui(GUIBase):
         # filepath = self._save_logic.get_path_for_module(module_name='Confocal')
         #self.get_savefolder_from_gui()
         
+        if self._sd.save_purePNG_checkBox.isChecked():
+            self.xy_image.save(filename + '_raw.png')
+
+    def save_auto_xy_scan_data_plot(self,tag):
+        path = self._save_logic.get_path_for_module(module_name='Confocal')
+        info_params = self._save_logic.current_setup_parameters
+        cb_range = self.get_xy_cb_range()
+        info_params = dict(info_params)
+        # Percentile range is None, unless the percentile scaling is selected in GUI.
+        pcile_range = None
+        if not self._mw.xy_cb_manual_RadioButton.isChecked():
+            low_centile = self._mw.xy_cb_low_percentile_DoubleSpinBox.value()
+            high_centile = self._mw.xy_cb_high_percentile_DoubleSpinBox.value()
+            pcile_range = [low_centile, high_centile]
+        filename = os.path.join(
+            path,
+            time.strftime('%Y%m%d-%H%M-%S_confocal_xy_{0}'.format(tag)))
+        self._scanning_logic.save_xy_data(colorscale_range=cb_range, percentile_range=pcile_range, block=False, filepath=path, info_params=info_params)
+
         if self._sd.save_purePNG_checkBox.isChecked():
             self.xy_image.save(filename + '_raw.png')
 
