@@ -1,10 +1,10 @@
 import re
 
-fi= open("C:\src\qudi\gui\\laserscanner\\ui_laserscanner_gui.ui","r")
+fi= open(r"C:\src\qudi\gui\dd\ui_dd_gui.ui","r")
 lines=fi.readlines()
 fi.close()
 
-logicstring="self._voltscan_logic" # the path to the logic from the gui
+logicstring="self" # the path to the logic from the gui
 
 connectorstring="" # should be used in the gui on_activate
 disconnectorstring="" # should be used in the gui on_deactivate
@@ -15,7 +15,7 @@ setdefault="" # should be used in the gui on_activate
 
 for line in lines:
     	#print(line)
-        if "ple_" in line:# and("NumberOfLines" in line):
+        if "dd_" in line.lower():# and("NumberOfLines" in line):
             if "_Button" in line or "_pushButton" in line :
                 #print(line)
                 result = re.search('name="(.*?)"', line)
@@ -55,5 +55,14 @@ for line in lines:
                     funcdefs=funcdefs + f"def {result.group(1)}_Edited(self,value):\n\tprint('done something with {result.group(1)}. Value=',value)\n\tself.{result.group(1)[:-14]}=value\n\n"
                     variables=variables + f"{result.group(1)[:-14]}:float\n"
                     setdefault=setdefault+f"self._mw.{result.group(1)}.setValue({logicstring}.{result.group(1)[:-14]})\n"
+
+            elif "_comboBox" in line or "_ComboBox" in line: 
+                result = re.search('name="(.*?)"', line)
+                if result != None:
+                    connectorstring=connectorstring+f"self._mw.{result.group(1)}.currentTextChanged.connect({logicstring}.{result.group(1)}_TextChanged)\n"
+                    disconnectorstring=disconnectorstring+f"self._mw.{result.group(1)}.currentTextChanged.disconnect()\n"
+                    funcdefs=funcdefs + f"def {result.group(1)}_TextChanged(self,value):\n\tprint('done something with {result.group(1)}. Value=',value)\n\tself.{result.group(1)[:-14]}=value\n\n"
+                    variables=variables + f"{result.group(1)}:float\n"
+                    setdefault=setdefault+f"self._mw.{result.group(1)}.setCurrentText({logicstring}.{result.group(1)})\n"
 
 print(variables,funcdefs,connectorstring,setdefault,disconnectorstring,sep="\n")

@@ -201,19 +201,361 @@ def file_notes_frequencies():
         out += "{}\t{}\n".format(t.name, t.current_frequency)
     return out[:-1]
 
+def read_original_filepath(file_path): #used since the new queuelogic
+    """Reads the original file path from the top comment of a Python file."""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        first_lines = [next(f) for _ in range(2)]  # read first two lines
+
+    for line in first_lines:
+        if line.startswith("# Original file path:"):
+            return line.replace("# Original file path:", "").strip()
+    return None
+
+
 def create_nuclear(script_path):
+    try: #used since the new queuelogic
+        if not "UserScripts" in script_path:
+            script_path =read_original_filepath(script_path)
+    except:
+        print("could not retriev original path, we will get an error.")
+        pass
+
     reload(logic.NuclearOPs)
     if not os.path.isfile(script_path):
         raise Exception('Error: ', script_path)
+    print(1)
     nuclear = logic.NuclearOPs.NuclearOPs()#TODO fill config here
     nuclear.make_save_location_params(script_path=script_path,
                                       folder= r"D:/Data/NuclearOps",
                                       sub_folder_kw="UserScripts")
+    print(2)
     nuclear_name = "NuclearOPs{}_{}".format(nuclear.file_name, datetime.datetime.strftime(nuclear.date_of_creation, nuclear.__TITLE_DATE_FORMAT__))
+    print(3)
     nuclear.pld = data_handling.PlotData(title=nuclear_name, gui=True)
-    nuclear.file_notes = ''#TODO get transition tracker here... file_notes_frequencies()
+    print("created_plot_data")
+    #nuclear.file_notes = ''#TODO get transition tracker here... file_notes_frequencies()
+    nuclear.__dict__['file_notes'] = ''
     #setattr(pi3d, nuclear_name, nuclear)##todo
+    print("created_nuclear__")
     return nuclear
+
+
+##########################################
+# For tomography preperations to find gates
+
+import sympy as sp
+from collections import deque
+from sympy.physics.quantum import TensorProduct
+import numpy as np
+
+class Tomography_helper:
+    # ---------------------------------------------------------------------
+    # User must define/import:
+    # sigma_x, sigma_y, sigma_z
+    # H1,H2,S1,S2,CNOT12,CNOT21
+    # ---------------------------------------------------------------------
+    # Example placeholders:
+    # sigma_x = ...
+    # sigma_y = ...
+    # sigma_z = ...
+
+    print("building helper")
+    # Pauli matrices
+
+    I2 = sp.eye(2)
+    I=I2
+
+    X = sp.Matrix([[0,1],[1,0]])
+    sigma_x=X
+    Y = sp.Matrix([[0,-sp.I],[sp.I,0]])
+    sigma_y=Y
+    Z = sp.Matrix([[1,0],[0,-1]])
+    sigma_z=Z
+
+    H = sp.Matrix([[1,1],[1,-1]])/sp.sqrt(2)
+    S = sp.Matrix([[1,0],[0,sp.I]])
+
+    # CNOT (control qubit 0 -> target qubit 1)
+    CNOT01 = sp.Matrix([
+    [1,0,0,0],
+    [0,1,0,0],
+    [0,0,0,1],
+    [0,0,1,0]
+    ])
+
+    # reverse CNOT
+    CNOT10 = sp.Matrix([
+    [1,0,0,0],
+    [0,0,0,1],
+    [0,0,1,0],
+    [0,1,0,0]
+    ])
+
+    SWAP = sp.Matrix([
+    [1,0,0,0],
+    [0,0,1,0],
+    [0,1,0,0],
+    [0,0,0,1]
+    ])
+
+    H1= TensorProduct(H,I2)
+    H2= TensorProduct(I2,H)
+
+    S1= TensorProduct(S,I2)
+    S2= TensorProduct(I2,S)
+
+    CNOT12= CNOT01
+    CNOT21= CNOT10
+
+    SWAP= SWAP
+
+
+    pauli = {"I":I2,"X":X,"Y":Y,"Z":Z}
+
+    paulis = {}
+
+    for a in "IXYZ":
+        for b in "IXYZ":
+            paulis[a+b] = TensorProduct(pauli[a],pauli[b])
+
+    def equal_up_to_sign(self,A,B):
+        return sp.simplify(A-B)==sp.zeros(4) or \
+            sp.simplify(A+B)==sp.zeros(4)
+
+    def conjugate(self,U,P):
+        return sp.simplify(U*P*U.H)
+
+    basis = [
+        TensorProduct(I,I),
+        
+        TensorProduct(sigma_x,I),
+        TensorProduct(sigma_y,I),
+        TensorProduct(sigma_z,I),
+
+        TensorProduct(I,sigma_x),
+        TensorProduct(I,sigma_y),
+        TensorProduct(I,sigma_z),
+
+        TensorProduct(sigma_x,sigma_x),
+        TensorProduct(sigma_x,sigma_y),
+        TensorProduct(sigma_x,sigma_z),
+
+        TensorProduct(sigma_y,sigma_x),
+        TensorProduct(sigma_y,sigma_y),
+        TensorProduct(sigma_y,sigma_z),
+
+        TensorProduct(sigma_z,sigma_x),
+        TensorProduct(sigma_z,sigma_y),
+        TensorProduct(sigma_z,sigma_z),
+    ]
+
+    pauli_names = [
+        "II",
+
+        "XI","YI","ZI",
+        "IX","IY","IZ",
+
+        "XX","XY","XZ",
+        "YX","YY","YZ",
+        "ZX","ZY","ZZ"
+    ]
+
+    TP=TensorProduct
+
+
+
+
+    def __init__(self):
+        self.create_generators()
+        self.create_transitions()
+
+    def pauli_name(self,P):
+        """
+        Return the Pauli label corresponding to matrix P.
+        Ignores an overall ± sign.
+        """
+
+        for name, M in self.paulis.items():
+
+            if sp.simplify(P - M) == sp.zeros(4):
+                return name
+
+            if sp.simplify(P + M) == sp.zeros(4):
+                return name
+
+        return None
+
+    def rx(self,phi):
+        return sp.Matrix([
+            [sp.cos(phi/2), -sp.I*sp.sin(phi/2)],
+            [-sp.I*sp.sin(phi/2), sp.cos(phi/2)]
+        ])
+
+
+    def ry(self,phi):
+        return sp.Matrix([
+            [sp.cos(phi/2), -sp.sin(phi/2)],
+            [sp.sin(phi/2),  sp.cos(phi/2)]
+        ])
+
+    def Rx1(self,phi):
+        return self.TP(sp.Matrix(self.rx(phi)),self.I2)
+    def Ry1(self,phi):
+        return self.TP(sp.Matrix(self.ry(phi)),self.I2)
+
+    def Rx2(self,phi):
+        return self.TP(self.I2,sp.Matrix(self.rx(phi)))
+    def Ry2(self,phi):
+        return self.TP(self.I2,sp.Matrix(self.ry(phi)))
+
+    def create_generators(self):
+        self.generators2 = {
+            "Rx90_1": self.Rx1(sp.pi/2),
+            "Rxm90_1": self.Rx1(-sp.pi/2),
+
+            "Ry90_1": self.Ry1(sp.pi/2),
+            "Rym90_1": self.Ry1(-sp.pi/2),
+
+            "Rx90_2": self.Rx2(sp.pi/2),
+            "Rxm90_2": self.Rx2(-sp.pi/2),
+
+            "Ry90_2": self.Ry2(sp.pi/2),
+            "Rym90_2": self.Ry2(-sp.pi/2),
+
+            "CNOT12": self.CNOT12,
+            "CNOT21": self.CNOT21,
+        }
+
+
+    def build_paulis(self,sigma_x,sigma_y,sigma_z):
+        I=sp.eye(2)
+        names=["I","X","Y","Z"]
+        mats={"I":I,"X":sigma_x,"Y":sigma_y,"Z":sigma_z}
+
+        paulis={}
+        basis=[]
+        pauli_names=[]
+
+        for a in names:
+            for b in names:
+                name=a+b
+                P=TensorProduct(mats[a],mats[b])
+                paulis[name]=sp.simplify(P)
+                basis.append(P)
+                pauli_names.append(name)
+
+        return paulis,basis,pauli_names
+
+    def pauli_with_sign(self,P, paulis):
+        for n,M in paulis.items():
+            if sp.simplify(P-M)==sp.zeros(4):
+                return 1,n
+            if sp.simplify(P+M)==sp.zeros(4):
+                return -1,n
+        return None,None
+
+    def build_transition_table(self,paulis):
+        transitions={}
+        for pname,P in paulis.items():
+            if pname=="II":
+                continue
+            transitions[pname]={}
+            for g,G in self.generators2.items():
+                s,n=self.pauli_with_sign(sp.simplify(G*P*G.H),paulis)
+                transitions[pname][g]=(s,n)
+        return transitions
+
+    def find_sequence(self,target, transitions):
+        start=(1,target)
+        goal=(1,"IZ")
+        q=deque([(start,[])])
+        visited={start}
+        while q:
+            state,path=q.popleft()
+            if state==goal:
+                return state[0],path
+            s,p=state
+            for gate,(sgn,nxt) in transitions[p].items():
+                new=(s*sgn,nxt)
+                if new not in visited:
+                    visited.add(new)
+                    q.append((new,path+[gate]))
+        return None,None
+
+    def sequence_to_unitary(self,seq):
+        U=sp.eye(4)
+        for g in seq:
+            U=self.generators2[g]*U
+        return sp.simplify(U)
+
+    def apply_measurement_sequence(self,rho,seq):
+        U=self.sequence_to_unitary(seq)
+        return sp.simplify(U*rho*U.H)
+
+    def measure_pauli_compiled(self,rho,name,paulis,transitions):
+        if name=="II":
+            return sp.Integer(1)
+        sign,seq=self.find_sequence(name,transitions)
+        rho_rot=self.apply_measurement_sequence(rho,seq)
+        Pp=(sp.eye(4)+paulis["IZ"])/2
+        Pm=(sp.eye(4)-paulis["IZ"])/2
+        pp=sp.trace(Pp*rho_rot)
+        pm=sp.trace(Pm*rho_rot)
+        return sp.simplify(sign*(pp-pm))
+
+    def pauli_measurements(self,rho, pauli_names, paulis, transitions):
+        vals=[self.measure_pauli_compiled(rho,n,paulis,transitions)
+            for n in pauli_names]
+        return sp.Matrix(vals)
+
+    def reconstruct_pauli(self,coeffs,basis):
+        rho=sp.zeros(4)
+        for c,B in zip(coeffs,basis):
+            rho+=c*B
+        return sp.simplify(rho/4)
+
+    def verify_sequence(self,target,paulis,transitions):
+        sign,seq=self.find_sequence(target,transitions)
+        U=self.sequence_to_unitary(seq)
+        lhs=sp.simplify(U.H*paulis["IZ"]*U)
+        rhs=sign*paulis[target]
+        ok=sp.simplify(lhs-rhs)==sp.zeros(4)
+        return ok,sign,seq
+
+    def pauli_full_test(self,rho, basis, pauli_names, paulis, transitions):
+        coeffs=self.pauli_measurements(rho,pauli_names,paulis,transitions)
+        rho_rec=self.reconstruct_pauli(coeffs,basis)
+        return sp.simplify(rho_rec-rho), coeffs, rho_rec
+
+    def create_transitions(self):
+        self.transitions = {}
+
+        for pname, P in self.paulis.items():
+
+            if pname == "II":
+                continue
+
+            self.transitions[pname] = {}
+
+            for gname, G in self.generators2.items():
+
+                P2 = sp.simplify(G * P * G.H)
+
+                #transitions[pname][gname] = pauli_name(P2)
+                sign,newname = self.pauli_with_sign(P2,self.paulis)
+                self.transitions[pname][gname] = (sign,newname)
+
+    def get_measurement_sequence(self,target):
+        return self.find_sequence(target,self.transitions)
+
+# for p in sorted(transitions):
+#     print("\n", p)
+
+#     for g in transitions[p]:
+#         print(f"  {g:8s} -> {transitions[p][g]}")
+
+
+
 
 if __name__ == '__main__':
     print(ret_sms(transition='13C90 ms-1'))

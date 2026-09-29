@@ -25,7 +25,7 @@ class SetupControlLogic(GenericLogic):
     mcas_holder = Connector(interface='McasDictHolderInterface')
     # powercontrol = Connector(interface='LaserPowerHolder')
     savelogic = Connector(interface = 'SaveLogic')
-    topticalaser = Connector(interface='TopticaLaserControl')
+    #topticalaser = Connector(interface='TopticaLaserControl')
 
 
     _AOM_volt:float=1
@@ -52,6 +52,8 @@ class SetupControlLogic(GenericLogic):
     active_channels=[] # used to talk to the pulsestreamer directly
     flip_mirror=False
 
+    c=0
+
     SigReadPower= QtCore.Signal()
 
     def __init__(self, config, **kwargs):   
@@ -70,9 +72,9 @@ class SetupControlLogic(GenericLogic):
         self.flipmirror_sequence_created = False
         self.ps=self._awg.mcas_dict.awgs["ps"]
 
-        self._topticalaser=self.topticalaser()
+        #self._topticalaser=self.topticalaser()
         self.actual_repump_power=self.Repump_power
-        self._topticalaser.set_power(self.actual_repump_power)
+        #self._topticalaser.set_power(self.actual_repump_power)
 
     def on_deactivate(self):
         """ Deactivate module.
@@ -88,7 +90,7 @@ class SetupControlLogic(GenericLogic):
         self.AOM_volt=0
         self._awg.mcas_dict.stop_awgs()
         self.write_to_pulsestreamer()
-        self._topticalaser.set_power(0)
+        #self._topticalaser.set_power(0)
         
         del self._awg
         #del self._powercontrol
@@ -191,15 +193,33 @@ class SetupControlLogic(GenericLogic):
         frequencies = np.array([self.MW1_freq, self.MW2_freq, self.MW3_freq])[[self.enable_MW1, self.enable_MW2, self.enable_MW3]]
         seq.start_new_segment("Microwaves"+str(frequencies), loop_count=200)
         if len(self.power) == 0:
-            seq.asc(name="without MW",
-                    A1=self.enable_A1,
-                    A2=self.enable_A2,
-                    laser=True,
-                    repump=self.enable_Repump,
-                    green=self.enable_Green,
-                    length_mus=50
-                    )
+            # seq.asc(name="without MW",
+            #         A1=self.enable_A1,
+            #         A2=self.enable_A2,
+            #         laser=True,
+            #         repump=self.enable_Repump,
+            #         green=self.enable_Green,
+            #         length_mus=50
+            #         )
+            
+            #### experimental
+            print("laser only")
+            if True:
+                print("setup_ctl_seq_w\o_MW")
+                channels=[]
+                for name,used in zip(['A2','A1',"repump","green"],[self.enable_A2,self.enable_A1,self.enable_Repump,self.enable_Green]):
+                    if used:
+                        channels.append(name)
+
+                if "A1" in channels or "A2" in channels:
+                    channels.append("laser")
+
+                self._awg.mcas_dict.awgs["ps"].constant(pulse=(0, channels, self._awg.mcas_dict.awgs["ps"].analog_volt, 0))
+                return
+
+            
         else:
+            print("with MW")
             seq.asc(name="with MW", pd2g1={"type": "sine", "frequencies": frequencies, "amplitudes": self.power},
                     A1=self.enable_A1,
                     A2=self.enable_A2,
@@ -303,6 +323,28 @@ class SetupControlLogic(GenericLogic):
         # else:
         #     self.write_to_pulsestreamer()
 
+    def DoNotPressButton_clicked(self,on):
+        if self.c==0 or self.c>5:
+            self.c+=1
+            raise Exception("What did you think would happen!?")
+        elif self.c==1:
+            self.c+=1
+            raise Exception("THE SETUP IS GOING TO EXPLODE!!! RUN FOR YOUR LIFE!!")
+        elif self.c==2:
+            self.c+=1
+            raise Exception("If the setup exploded, and nobody was there to see it, did it really explode?")
+        elif self.c==3:
+            self.c+=1
+            raise Exception("Nah, you saw through my trick.")
+        elif self.c==4:
+            self.c+=1
+            raise Exception("You seem to enjoy this way too much.")
+        elif self.c==5:
+            self.c+=1
+            raise Exception("Come on, do something usefull, like solving our contrast problem. For example, you can see if our phase_pi2_2_offset parameters is good at pi/2. Or try another Tau that fits better the criteria. you can find a tau finder program in transitiontracker.TauOptimizer.")
+        
+            
+
 
     def create_flipmirror_sequence(self):
         seq = self._awg.mcas(name="FlippyFloppy", ch_dict={"2g": [1,2],"ps": [1]})
@@ -339,7 +381,7 @@ class SetupControlLogic(GenericLogic):
         self.Repump_power=value
         self.actual_repump_power=value
 
-        self._topticalaser.set_power(self.actual_repump_power)
+        #self._topticalaser.set_power(self.actual_repump_power)
         
 
 

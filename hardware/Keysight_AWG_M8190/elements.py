@@ -22,7 +22,7 @@ from . import util
 
 __SAMPLE_FREQUENCY__ = 12e3
 __SAMPLE_FREQUENCY_PS__ = 1e3
-__ROUND_SAMPLE_PRESET__ = 16
+__ROUND_SAMPLE_PRESET__ = 1
 __ADVANCE_MODE_MAP__ = {'AUTO': 0, 'COND': 1, 'REP': 2, 'SING': 3}
 __AMPLITUDE_GRANULARITY__ = 1 / 2. ** 11
 __MAX_LENGTH_SMPL__ = 2e9  # most probably wrong, but a reasonable estimate
@@ -474,7 +474,7 @@ class BaseWave(Base):
 class WaveStep(BaseWave):
     def __init__(self, type='wait', phase_offset_type='coherent', frequencies=None, amplitudes=None, constant_value=None,
                  phases=None, smpl_marker=False, sync_marker=False, wave_file=None, length_mus=None,
-                 length_smpl=None, wf_start=0,stretching_factor=1,correction_factor=1,  **kwargs):
+                 length_smpl=None, wf_start=0,stretching_factor=1,correction_factor=1,percentage=100,  **kwargs):
         super(WaveStep, self).__init__(**kwargs)
         self.length_mus = length_mus
         self.length_smpl = length_smpl
@@ -490,6 +490,7 @@ class WaveStep(BaseWave):
         self.wf_start = wf_start # Pierres optimal control
         self.stretching_factor=stretching_factor # Pierres optimal control
         self.correction_factor=correction_factor # Pierres optimal control
+        self.percentage=percentage # Irenes chrestenson gate
 
     phase_offset_type = util.ret_property_list_element('phase_offset_type', ['coherent', 'absolute'])
     smpl_marker = util.ret_property_typecheck('smpl_marker', bool)
@@ -538,7 +539,7 @@ class WaveStep(BaseWave):
     @type.setter
     def type(self, val):
         self._type = util.check_list_element(val, 'type', ['wait', 'constant', 'sine', 'sinegauss', 'sineparabol', 'sineflattop', 'sinehermite', 'sinehermite_rf', 'sinehermite_rise',
-                                                           'sinehermite_fall', 'robust','gauss', 'gauss_6ns','gauss_10ns','gauss_2_pulses','OC_test'])
+                                                           'sinehermite_fall', 'robust','gauss', 'gauss_6ns','gauss_10ns','gauss_2_pulses','OC_test',"chrestenson"])
         if self.type == 'robust' and hasattr(self, '_wave_file'):
             self.length_mus = self.wave_file.length_mus
 
@@ -735,7 +736,14 @@ class WaveStep(BaseWave):
             samples[start:start + length_smpl] += np.int16(arg)
 
     def OC_test(self,samples,start,amps,freqs,length_smpl,filename=r"z:\Pierre_Kuna\smpls_pulse_test_OC.csv",stretching_factor=1,correction_factor=1):
-        data=np.loadtxt(filename)
+        if filename.endswith("csv"):
+            data=np.loadtxt(filename)
+        elif filename.endswith("npy"):
+            data=np.load(filename)
+        else:
+            print("no valid file")
+            return
+
 
         if stretching_factor!=1:
             Wave=[data[0]]
@@ -787,6 +795,61 @@ class WaveStep(BaseWave):
             sin(res, freqs)
         print("pulse_duration= ",len(res)/__SAMPLE_FREQUENCY__," µs")
         samples[start:start + length_smpl]=np.int16(np.round(res/correction_factor,1))
+
+    def Chrestenson_gate(self,samples,start,amps,freqs,length_smpl,filename=r"z:\Pierre_Kuna\smpls_pulse_test_OC.csv",percentage=100,correction_factor=1):
+        if filename.endswith("csv"):
+            data=np.loadtxt(filename)
+        elif filename.endswith("txt"):
+            data=np.loadtxt(filename)
+        elif filename.endswith("npy"):
+            data=np.load(filename)
+        else:
+            print("no valid file")
+            return
+        
+        amps=np.array(amps)
+
+        #normalize
+        data=data * correction_factor # doesnt do anything because of rescaling afterwards
+        data=data/np.max(abs(np.sum(data,axis=1))) # all 3 transitions amps together may not be larger than 1 
+
+        amp_bins=len(data[:,0])
+        repeat=length_smpl//amp_bins
+        rest=length_smpl-repeat*amp_bins
+
+        length_smpl=repeat*amp_bins
+        data=np.repeat(data,repeat,axis=0)
+
+        #data = data[self.wf_start:]
+        if length_smpl < np.size(data):
+            N = length_smpl
+        else:
+            N = len(data)
+
+        N=int(percentage/100*N)# only a part of your gate will be run
+
+        res = np.zeros_like(data[:N])
+        res[:N] = data[:N]
+        res = res * amps * 2047
+
+        def sin(res, freq):
+                arg = np.arange(0, len(res), dtype=np.float) #time in bin length
+                t=arg/__SAMPLE_FREQUENCY__
+                sine_waves = np.stack([np.sin(2 * np.pi * f * t) for f in freq], axis=1)
+                res *= sine_waves
+
+        if len(freqs)==data.shape[1]:
+            sin(res, freqs)
+        elif len(freqs)==1:
+            sin(res, list(freqs)*data.shape[1])
+        else:
+            print("invalid frequencies length")
+            return
+
+        res=np.sum(res,axis=1)
+
+        print("pulse_duration= ",len(res)/__SAMPLE_FREQUENCY__," µs")
+        samples[start:start + N]=np.int16(np.round(res,1))
 
         
 
@@ -5117,6 +5180,17 @@ class WaveStep(BaseWave):
                        filename=self.wave_file,
                        stretching_factor=self.stretching_factor,
                        correction_factor=self.correction_factor)
+            
+        elif self.type=="chrestenson":
+            amplitudes = self.amplitudes
+            self.Chrestenson_gate(samples=samples,
+                       start=start,
+                       amps=amplitudes,
+                       freqs=self.frequencies,
+                       length_smpl=self.length_smpl,
+                       filename=self.wave_file,
+                       correction_factor=self.correction_factor,
+                       percentage=self.percentage)
 
         samples[start:start + self.length_smpl] *= 2 ** 4
         samples[start:start + self.length_smpl] += self.marker
@@ -5161,6 +5235,9 @@ class WaveStep(BaseWave):
         
         elif self.type == 'OC_test':
             return 0
+        
+        elif self.type=="chrestenson":
+            return 0
 
         else:
             raise Exception('Neither sine nor robust do apply here...{}'.format(self.type))
@@ -5171,7 +5248,7 @@ class WaveStep(BaseWave):
         if self.type == 'constant':
             l = [self.name, self.length_mus, self.type, self.constant_value, int(self.smpl_marker), int(self.sync_marker)]
         elif self.type in ['sine', 'sinegauss', 'sineparabol', 'sineflattop', 'sinehermite', 'sinehermite_rf', 'sinehermite_rise', 'sinehermite_fall']:
-            l = [self.name, self.length_mus, self.type, self.frequencies, self.amplitudes, self.phases, int(self.smpl_marker), int(self.sync_marker)]
+            l = [self.name, self.length_mus, self.type, self.frequencies, self.amplitudes, self.phases, int(self.smpl_marker), int(self.sync_marker), self.phase_offset_type]
         elif self.type == 'robust':
             l = [self.name, self.length_mus, self.type, self.frequencies, 'wave_file', self.phases, int(self.smpl_marker), int(self.sync_marker)]
         elif self.type == 'gauss':
@@ -5189,6 +5266,9 @@ class WaveStep(BaseWave):
             
         elif self.type == 'OC_test':
             l= [self.name, self.length_mus, self.type, self.frequencies, self.amplitudes]
+
+        elif self.type=="chrestenson":
+            l = [self.name, self.length_mus, self.type, self.frequencies, self.amplitudes]
 
         return self.ret_list(l, row=row, prefix=prefix)
 

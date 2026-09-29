@@ -62,7 +62,7 @@ class RabiLogic(GenericLogic,rabi_default):
     SigCheckReady_Beacon = QtCore.Signal()
     sigFitPerformed= QtCore.Signal(np.float)
     sigUnits=QtCore.Signal(int)
-
+    waveform="sinehermite"
     starting_time=0
 
     def on_activate(self):
@@ -684,7 +684,7 @@ class RabiLogic(GenericLogic,rabi_default):
     
             if (self.rabi_A1 or self.rabi_A2 or self.rabi_CWRepump) and (self.rabi_MW2 or self.rabi_MW3):
                 seq.asc(name="init_sine" + str(duration),
-                        pd2g1={"type": "sine", "frequencies": freq_init, "amplitudes": power_init},
+                        pd2g1={"type": self.waveform, "frequencies": freq_init, "amplitudes": power_init},
                         A1=self.rabi_A1,
                         A2=self.rabi_A2,
                         laser = True,
@@ -708,7 +708,7 @@ class RabiLogic(GenericLogic,rabi_default):
     
             seq.asc(name="gateMW", gateMW=True, length_mus=E.round_length_mus_to_x_multiple_ps(gateMW_dur, 64))
             seq.asc(name="Tau_pulse" + str(duration),
-                    pd2g1={"type": "sine", "frequencies": [self.rabi_MW1_Freq],
+                    pd2g1={"type": self.waveform, "frequencies": [self.rabi_MW1_Freq],
                             "amplitudes":[ _powers[0]]},
                     length_mus=duration,
                     gateMW=True)  # self.rabi_piPulseDuration is divided by 1000 to be in µs
@@ -801,11 +801,11 @@ class RabiLogic(GenericLogic,rabi_default):
             self.Amplitude_Fit=str(round(result.params["amplitude"].value,2))
             self.Frequency_Fit=str(round(result.params["frequency"].value*1e3,2))
             self.Phase_Fit=str(round(result.params["phase"].value*180/np.pi,2))
-            self.pi_pulse=round(1/(result.params["frequency"].value)/2,2)
+            self.pi_pulse=round(1/(result.params["frequency"].value)/2,3)
         except Exception as e:
             print("an error occured during fitting in Rabi:\n", e)
 
-        self.rabi_FitParams="Amplitude: "+self.Amplitude_Fit+"\n"+"Frequency  (MHz): "+self.Frequency_Fit+"\n"+"Pi pulse (ns): "+str(self.pi_pulse)+"\n"+"Phase: "+self.Phase_Fit
+        self.rabi_FitParams="Amplitude: "+self.Amplitude_Fit+"\n"+"Frequency  (MHz): "+self.Frequency_Fit+"\n"+"Pi pulse (µs): "+str(self.pi_pulse)+"\n"+"Phase: "+self.Phase_Fit
         
         self.sigFitPerformed.emit(1/(result.params["frequency"].value)/2)
 

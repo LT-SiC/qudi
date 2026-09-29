@@ -23,6 +23,8 @@ import os
 import collections
 import matplotlib.pyplot as plt
 import logging
+import builtins
+from scipy.interpolate import interp1d
 
 from PyQt5.QtWidgets import QTableWidgetItem, QMainWindow
 from PyQt5.QtCore import pyqtSignal
@@ -51,6 +53,9 @@ from core.util.mutex import Mutex
 import shutil
 
 import lmfit
+
+from natsort import natsorted
+import math
 
 ####################################################################################################################
 # single values
@@ -218,13 +223,73 @@ def plot_single_values(filename, start_date_str, end_date_str=None, grating='m')
 #     reload(transition_tracker_gui)
 class Wrapper():# this is there because our rabi is slightly offseted by a phase
     def __init__(self,rp):
-        self.pi=rp.pi-rp.phi/(2*np.pi*rp.period*2) #pi in µs -> f in MHz
-        self.pi2=rp.pi2-rp.phi/(2*np.pi*rp.period*2)
+        self.pi=rp.pi-rp.phi/(2*np.pi*rp.omega*2) #pi in µs -> f in MHz
+        self.pi2=rp.pi2-rp.phi/(2*np.pi*rp.omega*2)
         self.amp=rp.amp
         self.omega=rp.omega
         self.period=rp.period
         self.phi=rp.phi
         self.rp=rp
+
+class RPWrapper:
+    def __init__(self, rp):
+        self.rp = rp
+        self.Phi_dict = rp.phi_dict
+        self.phi=rp.phi
+        try: #if neither amp, or period, or omega is given to the rp, it doesn't calculate the pi and pi/2
+            self.amp=rp.amp
+            self.omega=rp.omega
+            self.period=rp.period
+            self.pi=self.get_corrected_pi() #pi in µs -> f in MHz
+            self.pi2=self.get_corrected_pi2()
+        except:
+            print("Could not crate RPWrapper in tt.\nCan a 22pF capacitor kill you?") #just joking, it doesn't
+
+
+    def _get_phi_for_amp(self):
+        #d = self.Phi_dict
+        d = pd.DataFrame(list(self.Phi_dict.items()), columns=["amp", "phi"]).astype(float)
+
+        #print(d)
+        amps = np.array(d['amp'])
+        phis = np.array(d['phi'])
+        order = np.argsort(amps)
+        #print(amps,phis)
+        return np.interp(self.amp, amps[order], phis[order])
+
+    
+    def get_corrected_pi(self):
+        phi_corr = self._get_phi_for_amp()
+        #freq=self._get_freq_for_amp()
+        #print("corrected phi:",phi_corr,self.amp)
+        omega = self.rp.omega
+        target=np.pi
+        return (target-phi_corr)/(omega*2*np.pi)
+
+    def get_corrected_pi2(self):
+        phi_corr = self._get_phi_for_amp()
+        #freq=self._get_freq_for_amp()
+        omega = self.rp.omega
+        target=np.pi/2
+
+        start = .100  # start of transition
+        end = .150    # end of transition
+
+        t2=(target-phi_corr)/(omega*2*np.pi)
+
+        def function1(t1,t2,ttot,start,end):
+            if ttot < start:
+                t = t1
+            elif ttot > end:
+                t = t2
+            else:
+                # linear interpolation 	between t1 and t2
+                alpha = (ttot - start) / (end - start)  # 0 at start, 1 at end
+                t = t1 * (1 - alpha) + t2 * alpha
+            return t
+        
+        return function1(self.pi/2,t2,self.pi,start,end)
+    
 
 class RabiParametersStatic:
     def __init__(self, filepath, transition_name=None):
@@ -305,18 +370,25 @@ class RabiParametersStatic:
         self.tnf = len([i for i in list(fd[0]) if 'amp' in i])
         ecn = self.file_header(self.tnf,add_phi=True)
         cn = list(fd[0])
+        #print("-------------------------")
+        #print(fd,ecn,cn,sep="\n")
         if cn != ecn:
             ecn = self.file_header(self.tnf,add_phi=False)
             if cn != ecn:
                 raise Exception('File column names not allowed. expected {}, found{}'.format(ecn, cn))
             
         df=pd.DataFrame(data=fd[1:, :], columns=fd[0, :])
+        #print(fd,ecn,cn,sep="\n")
+        self.df=df
         if "phi" in df.columns:
-            print("new phi")
-            self.phi=np.mean(float(df.phi.unique())) #I know this is a terrible way to solve the problem of getting access to phi in the rabi parameter file. If you know a better way, do it! (and tell me)
+            #print("new phi")
+            self.phi_dict={row["amp0"]:row["phi"] for i,row in df.iterrows()} #You should not use any function with "iter" in its name for more than a few thousand rows or you will have to get used to a lot of waiting.
+            self.phi=np.mean(df.phi.unique().astype(float)) #I know this is a terrible way to solve the problem of getting access to phi in the rabi parameter file. If you know a better way, do it! (and tell me)
         else:
+            self.phi_dict={row["amp0"]:0 for i,row in df.iterrows()} #You should not use any function with "iter" in its name for more than a few thousand rows or you will have to get used to a lot of waiting.
             self.phi=0
-        print("DF_______________",df)
+
+        #print("DF_______________",df)
         return df
 
     def set_data_array(self):
@@ -498,6 +570,7 @@ class RabiParametersSingle(object):
         omega = getattr(self.rp, 'omega')(tni=tni, **kwargs)
         try:
             self.phi=self.rp.phi
+            self.phi_dict=self.rp.phi_dict
         except Exception as e:
             print("Not Working!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",e)
         if zero_d_input:
@@ -576,210 +649,794 @@ class Transition:
 
 # gui QMainWindow, transition_tracker_gui.Ui_window
 
-class Register():
+class Couplings():
     def __init__(self):
+        # Load data into dfs and get list of spins
+        if os.path.exists(r"C:\src\qudi\log\transition_tracker_log\couplings_df_m32_live.hdf"):
+            print("TT:a")
+            df_long_m32 = pd.read_hdf(r"C:\src\qudi\log\transition_tracker_log\couplings_df_m32_live.hdf", key='data')
+            # Pivot to square
+            spins_m32 = natsorted(set(df_long_m32['spin_i']) | set(df_long_m32['spin_j']))
+        elif os.path.exists(r"C:\src\qudi\log\transition_tracker_log\couplings_df_m32_backup.hdf"):
+            print("TT:b")
+            df_long_m32 = pd.read_hdf(r"C:\src\qudi\log\transition_tracker_log\couplings_df_m32_backup.hdf", key='data')
+            # Pivot to square
+            spins_m32 = natsorted(set(df_long_m32['spin_i']) | set(df_long_m32['spin_j']))
+        if os.path.exists(r"C:\src\qudi\log\transition_tracker_log\couplings_df_p32_live.hdf"):
+            print("TT:c")
+            df_long_p32 = pd.read_hdf(r"C:\src\qudi\log\transition_tracker_log\couplings_df_p32_live.hdf", key='data')
+            # Pivot to square
+            spins_p32 = natsorted(set(df_long_p32['spin_i']) | set(df_long_p32['spin_j']))
+        elif os.path.exists(r"C:\src\qudi\log\transition_tracker_log\couplings_df_p32_backup.hdf"):
+            print("TT:d")
+            df_long_p32 = pd.read_hdf(r"C:\src\qudi\log\transition_tracker_log\couplings_df_p32_backup.hdf", key='data')
+            # Pivot to square
+            spins_p32 = natsorted(set(df_long_p32['spin_i']) | set(df_long_p32['spin_j']))
 
-        if False:#
-            pass#.path.exists(r"C:\src\qudi\register_df_live.hdf"):
-            #self.df = pd.read_hdf(r"C:\src\qudi\register_df_live.hdf", key="data")
+        # combine spins if different spins in m32 and p32 dataframes
+        self.spins = []
+        for spin in spins_m32 + spins_p32:
+            if spin not in self.spins:
+                self.spins.append(spin)
 
-        elif False:#os.path.exists(r"C:\src\qudi\register_df_backup.hdf"):
-            #self.df = pd.read_hdf(r"C:\src\qudi\register_df_backup.hdf", key="data")
-            pass
+        # create new dataframe consisting of all spins
+        # fill up the larger dataframe with values from the respective smaller dataframes
+        self.df_m3_2 = pd.DataFrame(index=self.spins, columns=self.spins, dtype=np.float64)
+        for spin_i in self.spins:
+            for spin_j in self.spins:
+                try:
+                    self.df_m3_2.at[spin_i, spin_j] = float(df_long_m32.loc[(df_long_m32.spin_i ==spin_i) & (df_long_m32.spin_j ==spin_j)].coupling)
+                except (ValueError, TypeError):
+                    self.df_m3_2.at[spin_i, spin_j] = np.nan
+
+        self.df_p3_2 = pd.DataFrame(index=self.spins, columns=self.spins, dtype=np.float64)
+        for spin_i in self.spins:
+            for spin_j in self.spins:
+                try:
+                    self.df_p3_2.at[spin_i, spin_j] = float(df_long_p32.loc[(df_long_p32.spin_i ==spin_i) & (df_long_p32.spin_j ==spin_j)].coupling)
+                except (ValueError, TypeError) as e:
+                    print("error with creating df p3/2:",e)
+                    self.df_p3_2.at[spin_i, spin_j] = np.nan
+
+
+    # def save_to_hdf(self):
+    #     print("Save hdf in tt")
+    #     # Convert to long format, suppress pandas FutureWarning
+    #     with warnings.catch_warnings():
+    #         warnings.simplefilter('ignore', FutureWarning)
+    #         stacked = self.df.stack(dropna=False)
+    #     df_long = stacked.reset_index()
+    #     df_long.columns = ['spin_i', 'spin_j', 'coupling']
+    #     df_long['coupling'] = df_long['coupling'].astype('float64')
+    #     # Save
+    #     df_long.to_hdf(r"C:\src\qudi\log\transition_tracker_log\couplings_df_live.hdf", key='data', mode='w', format='table')
+
+    # def save_backup_hdf(self):
+    #     print("Save backup hdf in tt")
+    #     # Convert to long format, suppress pandas FutureWarning
+    #     with warnings.catch_warnings():
+    #         warnings.simplefilter('ignore', FutureWarning)
+    #         stacked = self.df.stack(dropna=False)
+    #     df_long = stacked.reset_index()
+    #     df_long.columns = ['spin_i', 'spin_j', 'coupling']
+    #     df_long['coupling'] = df_long['coupling'].astype('float64')
+    #     # Save
+    #     df_long.to_hdf(r"C:\src\qudi\log\transition_tracker_log\couplings_df_backup.hdf", key='data', mode='w', format='table')
+
+    def get_coupling(self, spin1, spin2,subspace="m32"):
+        if (subspace=="m32") or (subspace=='-3/2'):
+            df=self.df_m3_2
+        elif (subspace=="p32") or (subspace=='+3/2'):
+            df=self.df_p3_2
+
+        c1 = df.loc[spin1, spin2]
+        c2 = df.loc[spin2, spin1]
+        return np.nanmean([c1,c2])
+    
+    def build_graph_from_df(self,subspace="-3/2", threshold: float = 0.5):
+        """
+        Build adjacency dictionary from coupling DataFrame:
+        Only include edges with known coupling > threshold.
+
+        Returns:
+            adj: dict node -> list of neighbor nodes
+            get_coupling(u,v): function returning coupling (float) or None
+        """
+        df=[self.df_m3_2,self.df_p3_2][subspace=="+3/2"]
+
+        nodes = list(df.index)
+        adj = {node: [] for node in nodes}
+        for i in nodes:
+            for j in nodes:
+                if i == j:
+                    continue
+                try:
+                    v = df.at[i, j]
+                except Exception:
+                    v = float('nan')
+                if pd.notna(v) and float(v) > threshold:
+                    adj[i].append(j)
+
+        def get_coupling(u, v):
+            # Try both orders for robustness
+            val = None
+            if u in df.index and v in df.columns:
+                val = df.at[u, v]
+            if pd.isna(val):
+                if v in df.index and u in df.columns:
+                    val = df.at[v, u]
+            return float(val) if pd.notna(val) else None
+
+        return adj, get_coupling
+
+
+    def find_all_simple_paths_to_target(self, adj, target, max_len=None,allowed_starts=None, avoid_spins=None):
+
+        avoid_spins = set(avoid_spins or [])
+
+        if target not in adj:
+            return []
+
+        nodes = list(adj.keys())
+        max_len = max_len or len(nodes)
+        paths = []
+
+        # pick start nodes
+        if allowed_starts is not None and len(allowed_starts) > 0:
+            start_nodes = [s for s in allowed_starts if s in adj]
         else:
-            # data = {
-            #     'spin_name': ['C1', 'Si4', 'Si4', 'Si4', 'Si4'],
-            #     'subspace': ['3/2', '1/2', '-1/2', '3/2', '-3/2'],
-            #     'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi', 'xy4'],
-            #     'Trans': [10, 20, 30, 40, 50],
-            #     'Azz': [0.1, 0.01, 0.01, 0.01, 0.01],
-            #     'Aperp': [0.1, 0.01, 0.01, 0.01, 0.01],
-            #     'rattlesnake': [1, 3, 4, 6, 8]
-            # }
-            # self.df = pd.DataFrame(data)
+            start_nodes = nodes
+
+        def dfs(current, visited, path):
+            if len(path) > max_len:
+                return
+            if current == target:
+                paths.append(path.copy())
+                return
+            for nb in adj.get(current, []):
+                if nb in visited:
+                    continue
+                if nb in avoid_spins:
+                    continue
+                visited.add(nb)
+                path.append(nb)
+                dfs(nb, visited, path)
+                path.pop()
+                visited.remove(nb)
+
+        for start in start_nodes:
+            if start == target:
+                continue
+            if start in avoid_spins:
+                continue
+            if not adj.get(start):
+                continue
+            dfs(start, {start}, [start])
+
+        # remove duplicates
+        unique = []
+        seen = set()
+        for p in paths:
+            key = tuple(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(p)
+
+        unique.sort(key=lambda x: (len(x), x))
+        return unique
+
+    def chain_couplings_and_expected_time(self,path: list, get_coupling):
+        """
+        For a given path (list of nodes), return:
+            couplings: list of floats for consecutive node pairs
+            expected_time_s: expected measurement time in seconds (float)
+        If any required coupling is missing, return (None, None)
+        """
+        couplings = []
+        for a, b in zip(path[:-1], path[1:]):
+            c = get_coupling(a, b)
+            if c is None:
+                return None, None
+            couplings.append(float(c))
+
+        inv_sum = sum(1.0 /(c) for c in couplings)
+        if inv_sum <= 0:
+            expected_time_s = float('inf')
+        else:
+            expected_time_s = inv_sum/2
+        return couplings, expected_time_s
+
+
+    def fmt_hz(self,hz: float):
+        #"""Format coupling as '10Hz' if >=1, otherwise with 2 decimals '0.45Hz'"""
+        if hz >= 0:
+            return f"{round(hz,2)}Hz"
+        else:
+            return f"{hz:.2f}Hz"
+
+
+    def format_chain_result(self,path, couplings, expected_time_s):
+        """Return the human-readable string exactly like your example."""
+        couplings_str = "-".join(self.fmt_hz(c) for c in couplings)
+        if expected_time_s is None:
+            time_str = "N/A"
+        elif math.isinf(expected_time_s):
+            time_str = "Inf"
+        else:
+            time_str = f"{expected_time_s * 1000.0:.2f} ms"
+        chain_form = "-".join(path)
+        return f"Chain: {chain_form}, {couplings_str}, Expected measurement time = {time_str}"
+
+
+            
+Qt = QtCore.Qt
+NA = np.nan  # compatible with older pandas
+
+HDF_LIVE = r"C:\src\qudi\log\transition_tracker_log\register_df_live.hdf"
+HDF_BACKUP = r"C:\src\qudi\log\transition_tracker_log\register_df_backup.hdf"
+HDF_LOG_DIR = r"C:\src\qudi\log\transition_tracker_log\register_log"
+
+def nowstr():
+    return datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+class Register(object):
+    """
+    Pure logic / data class. Keeps DataFrame and provides:
+      - calculate_transitions_from_detuning(bfield)
+      - get_spin(spin_name, subspace, dd_method)
+      - save_to_hdf() and save_backup_hdf()
+    """
+
+    def __init__(self):
+        # Load existing or create default
+        self.create_error=False
+        self.df = None
+        self._load_or_create()
+
+        # Ensure string columns for keys (important for consistent filtering)
+        for c in ['spin_name', 'subspace', 'dd_method']:
+            if c in self.df.columns:
+                # Keep NaNs but coerce non-null values to str
+                self.df[c] = self.df[c].astype(object).where(self.df[c].isnull(), self.df[c].astype(str))
+
+
+        # Ensure sensible dtypes for numeric-ish columns (but keep object fallback)
+        self._ensure_working_dtypes()
+        self.df = self.df.fillna('').astype(str)
+        self.tau_optimizer = TauOptimizer(r"C:\src\qudi\log\transition_tracker_log\corrected_plot_data.csv")
+        self.save_imediatly=True #set to false in console to make many changes at a time and not having to wait each time.
+
+    def _load_or_create(self):
+        # Attempt live, then backup, otherwise create defaults (kept from original)
+        print("LOADING FROM LIVE:", HDF_LIVE)
+        print("LOADING FROM BACKUP:", HDF_BACKUP)
+        if os.path.exists(HDF_LIVE):
+            try:
+                self.df = pd.read_hdf(HDF_LIVE, key="data")
+            except Exception:
+                self.df = pd.read_hdf(HDF_BACKUP, key="data") if os.path.exists(HDF_BACKUP) else pd.DataFrame()
+        elif os.path.exists(HDF_BACKUP):
+            self.df = pd.read_hdf(HDF_BACKUP, key="data")
+        else:
+            # Create default sample dataset (kept similar to your original initial population)
+            # Minimal example to keep same columns and typical structure.
+            # If you want the large default payload from your original file, paste it here.
             data = {
                 'spin_name': ['C1', 'C1', 'C1', 'C1'],
                 'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
+                'dd_method': ['knillpi'] * 4,
                 'trans': [2.267683080, 2.24519308, 2.22394308, 2.201943],
-                'Azz': [0.02175, 0.02175, 0.02175, 0.02175],
-                'Aperp': [0.02363, 0.02363, 0.02363, 0.02363],
-                'ddrf_tau': [20, 20, 20, 20],
-                'ddrf_amp': [np.nan, np.nan, np.nan, 0.4],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, 0.72],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, 0.72],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, 0.72],
-                
+                'Azz': [0.02175] * 4,
+                'Aperp': [0.02363] * 4,
+                'ddrf_tau': [20] * 4,
+                'ddrf_amp': [NA, NA, NA, 0.4],
+                'ddrf_phase_inc': [NA, NA, NA, 0.72],
+                'ddrf_phase_init': [NA, NA, NA, 0.72],
+                'ddrf_phase_read': [NA, NA, NA, 0.72],
             }
-            df_c1 = pd.DataFrame(data)
+            self.df = pd.DataFrame(data)
 
-            data = {
-                'spin name': ['Si2', 'Si2', 'Si2', 'Si2'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [2.585488, 2.038085, 1.492570, 0.951619],
-                'Azz': [0.5453, 0.5453, 0.5453, 0.5453],
-                'Aperp': [0.131, 0.131, 0.131, 0.131],
-                'ddrf_tau': [20, 20, 20, 20],
-                'ddrf_amp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, np.nan],
-                'pi2_amp': [np.nan, np.nan, np.nan, np.nan], # for 200µs pulse
-                
-            }
-            df_si2 = pd.DataFrame(data)
+    def _ensure_working_dtypes(self):
+        # Convert obvious numeric columns to numeric where possible.
+        # But keep object for columns that can't be converted.
+        for col in self.df.columns:
+            # Skip key text columns
+            if col in ('spin_name', 'subspace', 'dd_method'):
+                continue
+            series = self.df[col]
+            # If largely numeric, convert to float
+            # Use pandas.to_numeric with errors='coerce' to avoid exceptions
+            coerced = pd.to_numeric(series, errors='coerce')
+            # If at least one non-NaN after coercion, adopt float dtype; else keep object
+            if coerced.notnull().any():
+                self.df[col] = coerced.astype(float)
+            else:
+                # keep as object/string series but keep NaNs
+                self.df[col] = series.astype(object)
 
-            data = {
-                'spin name': ['Si3', 'Si3', 'Si3', 'Si3'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [1.521245, 1.683775, 1.8501, 2.01],
-                'Azz': [-0.1628, -0.1628, -0.1628, -0.1628],
-                'Aperp': [0.0345, 0.0345, 0.0345, 0.0345],
-                'ddrf_tau': [20, 20, 20, 20],
-                'ddrf_amp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, np.nan],
-                'pi2_amp': [np.nan, np.nan, np.nan, np.nan], # for 200µs pulse
-                
-            }
-            df_si3 = pd.DataFrame(data)
+    def _normalize_dtypes_for_storage(self, df_in):
+        df_save = df_in.copy()
 
-            data = {
-                'spin name': ['Si4', 'Si4', 'Si4', 'Si4'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [1.5810515, np.nan, np.nan, 1.949872],
-                'Azz': [-0.1229, -0.1229, -0.1229, -0.1229],
-                'Aperp': [0.0866, 0.0866, 0.0866, 0.0866],
-                'ddrf_tau': [20, 20, 20, 20],
-                'ddrf_amp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, np.nan],
-                'pi2_amp': [np.nan, np.nan, np.nan, np.nan], # for 200µs pulse
-                
-            }
-            df_si4 = pd.DataFrame(data)
+        for col in df_save.columns:
+            # Try convert to numeric
+            converted = pd.to_numeric(df_save[col], errors='coerce')
 
-            data = {
-                'spin name': ['Si5', 'Si5', 'Si5', 'Si5'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [np.nan, np.nan, 1.7523455, 1.726645],
-                'Azz': [0.0289, 0.0289, 0.0289, 0.0289],
-                'Aperp': [0.0739, 0.0739, 0.0739, 0.0739],
-                'ddrf_tau': [20, 20, 20, 20],
-                'ddrf_amp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, np.nan],
-                'pi2_amp': [np.nan, np.nan, np.nan, np.nan], # for 200µs pulse
-                
-            }
-            df_si5 = pd.DataFrame(data)
+            # If at least one real number exists → treat column as float
+            if converted.notnull().any():
+                df_save[col] = converted.astype('float64')
+            else:
+                # store as string (object)
+                df_save[col] = df_save[col].astype(str)
 
-            data = {
-                'spin name': ['Si6', 'Si6', 'Si6', 'Si6'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [np.nan, np.nan, 1.7523455, 1.7266455],
-                'Azz': [0.0289, 0.0289, 0.0289, 0.0289],
-                'Aperp': [0.0739, 0.0739, 0.0739, 0.0739],
-                'ddrf_tau': [20, 20, 20, 20],
-                'ddrf_amp': [np.nan, np.nan, np.nan, 0.3272],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, 5.499],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, 2.761],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, 4.829],
-                'pi2_amp': [np.nan, np.nan, np.nan, 0.468], # for 200µs pulse
-                
-            }
-            df_si6 = pd.DataFrame(data)
+        return df_save
 
 
-            data = {
-                'spin name': ['Si7', 'Si7', 'Si7', 'Si7'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [np.nan, np.nan, np.nan, 1.782045],
-                'Azz': [np.nan, np.nan, np.nan, np.nan],
-                'Aperp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_tau': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_amp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, np.nan],
-                'pi2_amp': [np.nan, np.nan, np.nan, np.nan], # for 200µs pulse
-                
-            }
-            df_si7 = pd.DataFrame(data)
-
-
-            data = {
-                'spin name': ['Si8', 'Si8', 'Si8', 'Si8'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [np.nan, np.nan, np.nan, 1.778345],
-                'Azz': [np.nan, np.nan, np.nan, np.nan],
-                'Aperp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_tau': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_amp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, np.nan],
-                'pi2_amp': [np.nan, np.nan, np.nan, np.nan], # for 200µs pulse
-                
-            }
-            df_si8 = pd.DataFrame(data)
-            data = {
-                'spin name': ['Si9', 'Si9', 'Si9', 'Si9'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [np.nan, np.nan, np.nan, 1.803245],
-                'Azz': [np.nan, np.nan, np.nan, np.nan],
-                'Aperp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_tau': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_amp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, np.nan],
-                'pi2_amp': [np.nan, np.nan, np.nan, np.nan], # for 200µs pulse
-                
-            }
-            df_si9 = pd.DataFrame(data)
-
-            data = {
-                'spin name': ['Si10', 'Si10', 'Si10', 'Si10'],
-                'subspace': ['3/2', '1/2', '-1/2', '-3/2'],
-                'dd_method': ['knillpi', 'knillpi', 'knillpi', 'knillpi'],
-                'trans': [np.nan, np.nan, np.nan, 1.76235],
-                'Azz': [np.nan, np.nan, np.nan, np.nan],
-                'Aperp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_tau': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_amp': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_inc': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_init': [np.nan, np.nan, np.nan, np.nan],
-                'ddrf_phase_read': [np.nan, np.nan, np.nan, np.nan],
-                'pi2_amp': [np.nan, np.nan, np.nan, np.nan], # for 200µs pulse
-                
-            }
-            df_si10 = pd.DataFrame(data)
-            self.df = pd.concat([df_c1, df_si2, df_si3, df_si4, df_si5, df_si6, df_si7, df_si8, df_si9, df_si10], ignore_index = True)
-    
-    def get_spin(self, spin_name, subspace, dd_method):
+    def save_to_hdf(self,way=None):
         """
-        Returns the DataFrame filtered by spin name, subspace, and dd_method.
-        If subspace or dd_method is '_none_', that criterion is ignored.
+        Persist the live DataFrame to HDF (overwrites live file).
         """
-        filtered = self.df[self.df['spin_name'] == spin_name]
-        if subspace != "_none_":
-            filtered = filtered[filtered['subspace'] == subspace]
-        if dd_method != "_none_":
-            filtered = filtered[filtered['dd_method'] == dd_method]
-        return filtered
-    
+        if self.create_error:
+            sdjfd
+
+        if way==None:
+            way=HDF_LIVE
+
+        print("SAVING TO:", way)
+
+        try:
+            df_save = self._normalize_dtypes_for_storage(self.df)
+            df_save.to_hdf(path_or_buf=way, key='data', mode='w', format='table')
+        except Exception as exc:
+            # Be resilient: try to at least write a backup copy
+            print("FAILED saving to LIVE:", exc)
+            try:
+                df_save.to_hdf(path_or_buf=HDF_BACKUP, key='data', mode='w', format='table')
+            except Exception:
+                # Last resort: raise error for caller to handle/log
+                raise exc
+
+    def save_backup_hdf(self):
+        """
+        Save a backup and timestamped log copy.
+        """
+        df_save = self._normalize_dtypes_for_storage(self.df)
+        try:
+            df_save.to_hdf(path_or_buf=HDF_BACKUP, key='data', mode='w', format='table')
+        except Exception:
+            pass
+        try:
+            if not os.path.exists(HDF_LOG_DIR):
+                os.makedirs(HDF_LOG_DIR)
+            log_path = os.path.join(HDF_LOG_DIR, "register_df_log" + nowstr() + ".hdf")
+            df_save.to_hdf(path_or_buf=log_path, key='data', mode='w', format='table')
+        except Exception:
+            pass
+
+    def get_spin(self, spin_name, subspace, dd_method,Tau_finder=False,comment=None):
+        """
+        Returns filtered DataFrame for a spin. Signature preserved.
+        If subspace or dd_method == '_none_' the filter is ignored.
+        """
+
+        if 'spin_name' not in self.df.columns:
+            return pd.DataFrame()
+
+        df2 = self.df[self.df['spin_name'] == str(spin_name)].copy()
+
+        if subspace != '_none_':
+            df2 = df2[df2['subspace'] == str(subspace)]
+
+        if dd_method != '_none_':
+            df2 = df2[df2['dd_method'] == str(dd_method)]
+
+        if Tau_finder and comment:
+            print("choosing comment over Tau finder argument")
+            pattern=comment
+        elif comment:
+            pattern=comment
+        elif Tau_finder:
+            pattern="reserved_for_tau_finder"
+
+        if Tau_finder or comment:
+            df2 = df2[df2['comment'] == pattern]
+
+        
+
+        # --- Convert numeric-like columns back to float ---
+        for col in df2.columns:
+            if col in ['spin_name', 'subspace', 'dd_method']:
+                continue
+
+            converted = pd.to_numeric(df2[col], errors='coerce')
+
+            # Only convert column if at least one real number exists
+            if converted.notnull().any():
+                df2[col] = converted.astype(float)
+
+            
+
+        return df2.reset_index(drop=True)
+
+        
+    def add_column(self, name):
+        if name in self.df.columns:
+            return
+
+        self.df[name] = ''
+
+
+    def calculate_transitions_from_detuning(self, bfield):
+        """
+        Assign transition frequencies from measured detuning (in-place).
+        Signature preserved.
+        """
+        def safe_float(val):
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
+
+        si_bath = bfield * (-8.465)
+        c_bath = bfield * 10.708
+
+        def row_trans(row):
+            det = safe_float(row.get('detuning'))
+            if det is None:
+                return NA
+            # Choose Si or C bath depending on spin name containing 'C'
+            bath = c_bath if ('C' in str(row.get('spin_name'))) else si_bath
+            return det + bath
+
+        # Use .apply to preserve indices and avoid broadcasting rules surprises
+        if 'detuning' in self.df.columns:
+            self.df['trans'] = self.df.apply(row_trans, axis=1)
+        else:
+            # no detuning column, nothing to compute
+            pass
+
+    def set_value(
+        self,
+        spin_name,
+        subspace,
+        dd_method,
+        column,
+        value,
+        row_number=0
+    ):
+        """
+        Modify a value programmatically.
+
+        Parameters
+        ----------
+        spin_name : str
+        subspace : str
+        dd_method : str
+        column : str
+            Column to modify.
+        value : any
+            Will be stored as string internally.
+        row_number : int
+            Index within the filtered result (0-based).
+        """
+
+        if column not in self.df.columns:
+            raise ValueError(f"Column '{column}' does not exist.")
+
+        mask = (
+            (self.df['spin_name'] == str(spin_name)) &
+            (self.df['subspace'] == str(subspace)) &
+            (self.df['dd_method'] == str(dd_method))
+        )
+
+        filtered_indices = self.df.index[mask].tolist()
+
+        if not filtered_indices:
+            raise ValueError("No matching rows found.")
+
+        if row_number >= len(filtered_indices):
+            raise IndexError(
+                f"row_number {row_number} out of range "
+                f"(only {len(filtered_indices)} rows match)"
+            )
+
+        df_index = filtered_indices[row_number]
+
+        # Always store as string (GUI stability rule)
+        self.df.at[df_index, column] = str(value)
+
+        if self.save_imediatly:
+            print("call from set_value")
+            self.save_to_hdf()
+
+    def update_filtered(self, mask, column, value):
+        """mask = (
+    (register.df['spin_name'] == "xy") &
+    (register.df['subspace'] == "bc") &
+    (register.df['dd_method'] == "za"))"""
+        
+        print("matching:", np.sum(mask))
+        indices = self.df.index[mask]
+        self.df.loc[indices, column] = str(value)
+        if self.save_imediatly:
+            print("call from update_filtered")
+            self.save_to_hdf()
+
+
+
+
+class TauOptimizer: #for DDRF tau
+
+    def __init__(self, dd_csv_path=None):
+        self.dd_interp_y1 = None
+        self.dd_interp_y2 = None
+        self.dd_data = None
+        self.DD_avrg = None
+
+        if dd_csv_path is not None:
+            data = pd.read_csv(dd_csv_path)
+            self.dd_data = data
+
+            # x/2 because DDRF uses a different tau definition than DD
+            tau_vals = data.iloc[:, 0].values/2
+            y1_vals  = data.iloc[:, 1].values
+            y2_vals  = data.iloc[:, 2].values
+
+            
+            self.dd_interp_y1 = interp1d(
+                tau_vals, y1_vals,
+                kind='linear',
+                bounds_error=False,
+                fill_value="extrapolate"
+            )
+            self.dd_interp_y2 = interp1d(
+                tau_vals, y2_vals,
+                kind='linear',
+                bounds_error=False,
+                fill_value="extrapolate"
+            )
+
+            self.DD_avrg = np.mean([*y1_vals, *y2_vals])
+
+    def _dd_lookup(self, tau):
+        """
+        Return (y1, y2, dd_score) for a given tau value.
+        dd_score = min(|y1 - 0.5|, |y2 - 0.5|): distance from bad region,
+        higher is better.
+        Returns (None, None, None) if interpolators are unavailable.
+        """
+        if self.dd_interp_y1 is None:
+            return None, None, None
+        try:
+            y1 = float(self.dd_interp_y1(tau))
+            y2 = float(self.dd_interp_y2(tau))
+            dd_score = min(abs(y1 - 0.45), abs(y2 - 0.45))
+            return y1, y2, dd_score
+        except Exception:
+            return None, None, None
+
+    def _score(self, physics_error_raw, drive_error, dd_score,
+               w_phys, w_drive, w_dd, use_dd_weight):
+        """Unified scoring: lower is better."""
+        s = w_phys * physics_error_raw + w_drive * drive_error
+        if use_dd_weight and dd_score is not None:
+            # Linear: subtract distance from bad region.
+            # Further from 0.5 -> higher dd_score -> lower total score -> preferred.
+            s -= w_dd * dd_score
+        return s
+
+    def _compute_candidate(self, k, n, wL, Azz, N, drive_freq,
+                            w_phys, w_drive, w_dd, use_dd_weight):
+        tau1 = k * np.pi / wL
+        tau2 = (np.pi * n) / (N * Azz)
+
+        tau_raw  = 0.5 * (tau1 + tau2)
+        tau_disc = int(tau_raw * drive_freq) / drive_freq
+
+        physics_error_raw = abs(tau1 - tau2)
+        drive_error       = abs(tau_disc - tau_raw)
+
+        # DD lookup at the quantised tau
+        y1_disc, y2_disc, dd_score_disc = self._dd_lookup(tau_disc)
+
+        # DD lookup at the physical (unquantised) tau
+        y1_raw, y2_raw, dd_score_raw = self._dd_lookup(tau_raw)
+
+        # scores
+        score_disc = self._score(physics_error_raw, drive_error,
+                                 dd_score_disc, w_phys, w_drive, w_dd, use_dd_weight)
+
+        # Physical solution has no quantisation penalty by definition
+        score_raw  = self._score(physics_error_raw, 0.0,
+                                 dd_score_raw,  w_phys, w_drive, w_dd, use_dd_weight)
+
+        return {
+            # shared
+            "tau1":               tau1,
+            "tau2":               tau2,
+            "k":                  k,
+            "n":                  n,
+            "physics_error_raw":  physics_error_raw,
+
+            # quantised variant
+            "tau_disc":           tau_disc,
+            "drive_error":        drive_error,
+            "y1_disc":            y1_disc,
+            "y2_disc":            y2_disc,
+            "dd_score_disc":      dd_score_disc,
+            "score_disc":         score_disc,
+
+            # physical (unquantised) variant
+            "tau_raw":            tau_raw,
+            "y1_raw":             y1_raw,
+            "y2_raw":             y2_raw,
+            "dd_score_raw":       dd_score_raw,
+            "score_raw":          score_raw,
+        }
+
+    @staticmethod
+    def _parse_solution_number(solution_number):
+        """Accept int or iterable; always return a 1-based list."""
+        if isinstance(solution_number, int):
+            return [solution_number]
+        indices = list(solution_number)
+        if indices and indices[0] == 0:          # caller passed range(N)
+            indices = [i + 1 for i in indices]
+        return indices
+
+    def get_best_tau(self,
+                     spin_name,
+                     N,
+                     wL,
+                     Azz,
+                     drive_freq,
+                     solution_number,
+                     tau_max=40,
+                     k_max=20000,
+                     w_phys=1.0,
+                     w_drive=1.0,
+                     w_dd=1.0,
+                     use_dd_weight=True):
+        """
+        Returns
+        -------
+        tau_disc_list : list of dicts, best quantised solutions in ranked order
+        tau_raw_list  : list of dicts, best physical solutions in ranked order
+
+        Both lists are ranked independently using the same scoring formula;
+        the physical list simply has drive_error = 0 (no quantisation shift)
+        and its DD lookup is evaluated at tau_raw rather than tau_disc.
+
+        Parameters
+        ----------
+        w_phys  : weight on physics_error_raw  (|tau1 - tau2|)
+        w_drive : weight on drive_error         (quantisation shift, disc only)
+        w_dd    : weight on DD penalty          (linear, subtracted; higher dd_score = better)
+        solution_number : int or iterable of 1-based indices
+        """
+
+        drive_freq = abs(drive_freq)
+        candidates = []
+
+        for k in range(-k_max, k_max + 1):
+            if k == 0:
+                continue
+
+            tau1 = k * np.pi / wL
+            if tau1 <= 0 or tau1 > tau_max:
+                continue
+
+            n_float = tau1 * N * Azz / (2 * np.pi)
+
+            for n in [int(np.floor(n_float)), int(np.ceil(n_float))]:
+                if n == 0:
+                    continue
+
+                c = self._compute_candidate(
+                    k, n, wL, Azz, N, drive_freq,
+                    w_phys, w_drive, w_dd, use_dd_weight
+                )
+
+                if c["tau_disc"] <= 0 or c["tau_disc"] > tau_max:
+                    continue
+                if c["tau_raw"]  <= 0 or c["tau_raw"]  > tau_max:
+                    continue
+
+                candidates.append(c)
+
+        if not candidates:
+            raise ValueError("No valid candidates found.")
+
+        # ------------------------------------------------------------------
+        # Deduplicate and rank QUANTISED solutions (key = tau_disc)
+        # ------------------------------------------------------------------
+        best_disc = {}
+        for c in candidates:
+            key = round(c["tau_disc"], 6)
+            if key not in best_disc or c["score_disc"] < best_disc[key]["score_disc"]:
+                best_disc[key] = c
+
+        unique_disc = builtins.sorted(best_disc.values(), key=lambda x: x["score_disc"])
+
+        # ------------------------------------------------------------------
+        # Deduplicate and rank PHYSICAL solutions (key = tau_raw)
+        # ------------------------------------------------------------------
+        best_raw = {}
+        for c in candidates:
+            key = round(c["tau_raw"], 6)
+            if key not in best_raw or c["score_raw"] < best_raw[key]["score_raw"]:
+                best_raw[key] = c
+
+        unique_raw = builtins.sorted(best_raw.values(), key=lambda x: x["score_raw"])
+
+        # ------------------------------------------------------------------
+        # Select requested solutions
+        # ------------------------------------------------------------------
+        indices = self._parse_solution_number(solution_number)
+
+        tau_disc_list = []
+        tau_raw_list  = []
+
+        for idx in indices:
+            if idx < 1 or idx > len(unique_disc):
+                raise ValueError(
+                    f"Requested solution #{idx} but only "
+                    f"{len(unique_disc)} quantised solutions available."
+                )
+            if idx < 1 or idx > len(unique_raw):
+                raise ValueError(
+                    f"Requested solution #{idx} but only "
+                    f"{len(unique_raw)} physical solutions available."
+                )
+            tau_disc_list.append(unique_disc[idx - 1])
+            tau_raw_list.append(unique_raw[idx  - 1])
+
+        #self._plot_results(spin_name, tau_disc_list, tau_raw_list)
+
+        return tau_disc_list, tau_raw_list
+
+    def _plot_results(self, spin_name, tau_disc_list, tau_raw_list):
+        if self.dd_data is None:
+            return
+
+        tau_vals = self.dd_data.iloc[:, 0].values
+        y1_vals  = self.dd_data.iloc[:, 1].values
+        y2_vals  = self.dd_data.iloc[:, 2].values
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(tau_vals, y1_vals, label="y1 (phase=0)",  color="black")
+        plt.plot(tau_vals, y2_vals, label="y2 (phase=pi)", color="dimgray", linestyle="--")
+
+        color_cycle = [
+            "tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple",
+            "tab:brown", "tab:pink",  "tab:gray",  "tab:olive","tab:cyan",
+        ]
+
+        for i, sol in enumerate(tau_disc_list):
+            color = color_cycle[i % len(color_cycle)]
+            plt.axvline(
+                sol["tau_disc"], linestyle='-', color=color,
+                label=f"#{i+1} disc={sol['tau_disc']:.4f} (score={sol['score_disc']:.4f})"
+            )
+
+        for i, sol in enumerate(tau_raw_list):
+            color = color_cycle[i % len(color_cycle)]
+            plt.axvline(
+                sol["tau_raw"], linestyle='--', color=color, alpha=0.5,
+                label=f"#{i+1} raw={sol['tau_raw']:.4f}  (score={sol['score_raw']:.4f})"
+            )
+
+        plt.axhline(0.5, linestyle=':', color="red", label="bad region (y=0.5)")
+
+        plt.xlabel("Tau")
+        plt.ylabel("DD signal")
+        plt.title(f"Tau solutions for {spin_name}")
+        plt.legend(fontsize=7)
+        plt.grid()
+        plt.show()
+
+
 class TransitionTracker(GenericLogic):
     c13_list = []#'13c5']#['13c414', '13c90', '13c13', '13c6', '13c-5', '13c-6']
     si29_list = [] ######          THIS MUST BE LOWERCASE !!!!!!!!!!!!!!!!!!!!!!!!
@@ -811,6 +1468,8 @@ class TransitionTracker(GenericLogic):
         self.connect_signals()  # todo
         # title = '' if title is None else title
         # self.setWindowTitle(title)
+        self.register=Register()
+        self.couplings=Couplings()
         self.reload_nuclear_parameters()
         self.mw_mixing_frequency_L = get_last_value_from_file('mw_mixing_frequency_L')
         self.mw_mixing_frequency_C = get_last_value_from_file('mw_mixing_frequency_C')
@@ -837,8 +1496,11 @@ class TransitionTracker(GenericLogic):
         self.update_stuff()
         #self._transition_tracker_gui = self.transition_tracker_gui()
 
-        self.Register=Register()
-    
+        
+        self.register.calculate_transitions_from_detuning((self.mw_mixing_frequency_L+self.mw_mixing_frequency_R)/(2*28031.6)) # FIXME use g_factor define above
+        self.si_bath = -8.465 * (self.mw_mixing_frequency_L+self.mw_mixing_frequency_R)/(2*28031.6) # FIXME use g_factor define above # FIXME Larmor is -omega *B
+        self.c_bath = 10.708 * (self.mw_mixing_frequency_L+self.mw_mixing_frequency_R)/(2*28031.6) # FIXME use g_factor define above # FIXME Larmor is -omega *B
+
     def on_deactivate(self):
         pass
 
@@ -889,9 +1551,84 @@ class TransitionTracker(GenericLogic):
                 shutil.copy(os.path.join(folder,original),os.path.join(folder,copy))
         
         script_folder=r"C:\src\qudi\notebooks\UserScripts"
-        shutil.copytree(os.path.join(script_folder,"13C5MHz"),os.path.join(script_folder,f"{str(spin_names).replace('.',',')}"[2:-2]))
+        shutil.copytree(os.path.join(script_folder,"29Si5"),os.path.join(script_folder,f"{str(spin_names).replace('.',',')}"[2:-2]))
 
         print("you need to restart qudi for the transition tracker to update")
+
+
+    def update_register_tau(self,Spin=None,subspace="-3/2",dd_method="knillpi",sol_number=1,sol="raw"): #experimental
+        "sol= raw or disc"
+
+
+
+        ddt_N={"knillpi":5}
+        tmp=self.register.save_imediatly
+
+        self.register.save_imediatly=False
+
+        if Spin==None:
+            for Spin in self.register.df.spin_name.unique():
+                try:
+                    mask = (
+                        (self.register.df['spin_name'] == str(Spin)) &
+                        (self.register.df['subspace'] == str(subspace)) &
+                        (self.register.df['dd_method'] == str(dd_method)) &
+                        (self.register.df['comment'] == "reserved_for_tau_finder")
+                    )
+
+                    df=self.register.get_spin(Spin, subspace.replace('+',''), dd_method.lower())
+                    n_rep_ddrf = int(df.n_rep_ddrf.iloc[0]) #this assumes only one reserved entry per spin
+                    bath=[self.c_bath,self.si_bath]["Si" in Spin]
+
+                    sol_disc,sol_raw=self.register.tau_optimizer.get_best_tau(Spin,N=ddt_N[dd_method]*n_rep_ddrf, wL=bath, Azz=df.Azz.iloc[0],drive_freq= df.trans.iloc[0], solution_number=[sol_number])
+
+                    tau= sol_disc[sol_number][f"tau_{sol}"] #or tau_disc
+
+                    #print(df)
+                    #print(np.sum(mask))
+                    #print(tau)
+
+                    self.register.update_filtered(mask,"ddrf_tau",tau)
+                    df = self.register.get_spin(Spin, subspace.replace('+',''), dd_method.lower())
+                    if np.sum(mask):
+                            print(f"\n========== SOLUTION #{sol_number} ==========")
+
+                            for k, v in sol_disc.items():
+                                print(f"  {k:25s}: {v}")
+
+                    #print(f"updated spin {Spin}")
+                    #print(df)
+                    #print("\n\n")
+
+                except Exception as e:
+                    print(f"error at spin {Spin}:", e)
+        else:
+                mask = (
+                    (self.register.df['spin_name'] == str(Spin)) &
+                    (self.register.df['subspace'] == str(subspace)) &
+                    (self.register.df['dd_method'] == str(dd_method)) &
+                    (self.register.df['comment'] == "reserved_for_tau_finder") 
+                )
+
+
+
+                df=self.register.get_spin(Spin, subspace.replace('+',''), dd_method.lower())
+
+                n_rep_ddrf = int(df.n_rep_ddrf.iloc[0])
+                bath=[self.c_bath,self.si_bath]["Si" in Spin]
+
+                sol_disc,sol_raw=self.register.tau_optimizer.get_best_tau(Spin,N=ddt_N[dd_method]*n_rep_ddrf, wL=bath, Azz=df.Azz.iloc[0],drive_freq= df.trans.iloc[0], solution_number=[sol_number])
+
+                tau= sol_disc[0][f"tau_{sol}"] #or tau_disc
+
+                self.register.update_filtered(mask,"ddrf_tau",tau)
+                print("new_tau=",tau)
+
+        self.register.save_imediatly=tmp
+        print("call from update_tau")
+        self.register.save_to_hdf()
+
+
 
     def do_nothing(self,*args,**kwargs):
         print("done nothing\n", "args are:\n",args)
@@ -1120,6 +1857,8 @@ class TransitionTracker(GenericLogic):
         for key, val in self.ntd.items():
             self.transition(key).current_frequency = -get_transition_frequency(h_diag=self.h_diag, dims=self.nvham.dims, 
                                                                                transition=val)
+        
+        self.register.calculate_transitions_from_detuning((self.mw_mixing_frequency_L+self.mw_mixing_frequency_R)/(2*28031.6))
         self.update_tt_nuclear_gui.emit() #connect to gui.
 
     def load_rabi_parameters(self):
@@ -1270,18 +2009,23 @@ class TransitionTracker(GenericLogic):
 
 
 
-    def update_stuff(self):
+    def update_stuff(self,PLE_only=False):
         print("updating stuff")
         for attr_name in ['_current_local_oscillator_freq', '_mw_mixing_frequency_L',
                           '_zero_field_splitting','mw_mixing_frequency_R','_ple_A2','_ple_A1','_ple_repump',
                           'ple_A2_fit_params','ple_A1_fit_params','interferometer_fit_params','interferometer_history']: #needs "ple_Ex", but where is this "ple_Ex" called?
             if not hasattr(self, attr_name):
                 return
+            
         self.update_tt_electron_gui.emit() #connect to the gui
+        if PLE_only:
+            return
         self.set_h_diag()
         if not hasattr(self, 'ntd'):
             return
         self.update_current_frequencies()
+        self.si_bath = -8.465 * (self.mw_mixing_frequency_L+self.mw_mixing_frequency_R)/(2*28031.6)
+        self.c_bath = 10.708 * (self.mw_mixing_frequency_L+self.mw_mixing_frequency_R)/(2*28031.6)
 
     # @property
     # def xyz(self):
@@ -1302,7 +2046,7 @@ class TransitionTracker(GenericLogic):
         self._ple_repump = misc.check_type(val, 'ple_repump', Number)
         if getattr(self, '_ple_repump', 0.0) != 0.0:
             save_value_to_file(self.ple_repump, 'ple_repump')
-        self.update_stuff()
+        self.update_stuff(PLE_only=True)
 
 
 
@@ -1319,7 +2063,7 @@ class TransitionTracker(GenericLogic):
         if getattr(self, '_ple_A2', 0.0) is not None:
 
             save_value_to_file(self.ple_A2, 'ple_A2')
-        self.update_stuff()
+        self.update_stuff(PLE_only=True)
 
 
     @property
@@ -1333,7 +2077,7 @@ class TransitionTracker(GenericLogic):
         if getattr(self, '_ple_A2_fit_params', 0.0) is not None:
 
             save_value_to_file(self.ple_A2_fit_params, 'ple_A2_fit_params')
-        self.update_stuff()
+        self.update_stuff(PLE_only=True)
 
     @property
     def ple_A1_fit_params(self):
@@ -1346,7 +2090,7 @@ class TransitionTracker(GenericLogic):
         if getattr(self, '_ple_A1_fit_params', 0.0) is not None:
 
             save_value_to_file(self.ple_A1_fit_params, 'ple_A1_fit_params')
-        self.update_stuff()
+        self.update_stuff(PLE_only=True)
 
 
 
@@ -1363,7 +2107,7 @@ class TransitionTracker(GenericLogic):
         if getattr(self, '_ple_A1', 0.0) is not None:
 
                 save_value_to_file(self.ple_A1, 'ple_A1')
-        self.update_stuff()
+        self.update_stuff(PLE_only=True)
 
 
     @property
@@ -1392,39 +2136,6 @@ class TransitionTracker(GenericLogic):
             save_value_to_file(self.interferometer_history, 'interferometer_history')
         self.update_stuff()
 
-
-
-
-
-
-    #this went to gui
-    # def update_gui_electron(self):
-    #     self.current_local_oscillator_freq_text_field.setText("{:.10f}".format(self.current_local_oscillator_freq))
-    #     self.current_local_oscillator_freq_p1_text_field.setText("{:.10f}".format(self.current_local_oscillator_freq_p1))
-    #     self.mw_mixing_frequency_text_field.setText("{:.10f}".format(self.mw_mixing_frequency))
-    #     self.mw_mixing_frequency_p1_text_field.setText("{:.10f}".format(self.mw_mixing_frequency_p1))
-    #     self.mw_transition_frequency_text_field.setText("{:.10f}".format(self.mw_transition_frequency))
-    #     self.mw_transition_frequency_p1_text_field.setText("{:.10f}".format(self.mw_transition_frequency_p1))
-    #     self.zero_field_splitting_text_field.setText("{:.10f}".format(self.zero_field_splitting))
-    #     self.ple_A2_text_field.setText("{:.10f}".format(self.ple_A2))
-    #     self.ple_A1_text_field.setText("{:.10f}".format(self.ple_A1))
-    #     # self.ple_repump_text_field.setText("{:.10f}".format(self.ple_A1))
-    #
-    #
-    #
-    #
-    # def update_gui_nuclear(self):
-    #     column_names = ['name', 'current_frequency', 'ms_state', 'spin_type', 'start_level', 'end_level']
-    #     self.script_queue_table.setColumnCount(len(column_names))
-    #     self.script_queue_table.clearSelection()
-    #     self.script_queue_table.clear()
-    #     self.script_queue_table.setHorizontalHeaderLabels(column_names)
-    #     self.script_queue_table.setEnabled(True)
-    #     self.script_queue_table.setRowCount(len(self.transitions))
-    #     for ridx, t in enumerate(self.transitions):
-    #         for cidx, attr_name in enumerate(column_names):
-    #             new_item = QTableWidgetItem(str(getattr(t, attr_name)))
-    #             self.script_queue_table.setItem(ridx, cidx, new_item)
 
     @staticmethod
     def correct_transition_name(name):
@@ -1619,7 +2330,7 @@ class TransitionTracker(GenericLogic):
         
     def RP(self,name,**kwargs):
         rp=self.rp(name,**kwargs)
-        wrapped=Wrapper(rp)
+        wrapped=RPWrapper(rp)
         return wrapped
 
     @property
@@ -1630,8 +2341,8 @@ class TransitionTracker(GenericLogic):
     def current_magnetic_field_vector(self):  # z and x field
         sx, sy, sz = jmat(1.5)
         f1 = self.mw_mixing_frequency_L #MHz
-        f3 = self.mw_mixing_frequency_C
-        f2 = self.mw_mixing_frequency_R
+        f2 = self.mw_mixing_frequency_C
+        f3 = self.mw_mixing_frequency_R
         def H(B_z, B_x):
             D = 34.9 #MHz
             gamma_e = 2.0028 * 1.6021766208e-19 / (4 * np.pi * 9.10938356e-31) * 1e-6

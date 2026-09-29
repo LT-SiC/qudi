@@ -1431,3 +1431,21 @@ class QudiPalettePale:
 
     purple = pg.mkColor(188, 0, 188)
     c6 = purple
+
+    blue = pg.mkColor(102, 94, 252,100)
+    c1_alpha = blue
+
+    orange = pg.mkColor(255, 175, 43,100)
+    c2_alpha = orange
+
+    magenta = pg.mkColor(255, 81, 152,100)
+    c3_alpha = magenta
+
+    green = pg.mkColor(0, 179, 0,100)
+    c4_alpha = green
+
+    cyan = pg.mkColor(59, 217, 233,100)
+    c5_alpha = cyan
+
+    purple = pg.mkColor(188, 0, 188,100)
+    c6_alpha = purple

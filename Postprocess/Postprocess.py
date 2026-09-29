@@ -12,6 +12,7 @@ import csv
 from itertools import combinations, product
 import copy
 import sqlite3
+import shutil
 
 import numpy as np
 import pandas as pa
@@ -22,7 +23,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 from lmfit import Model, Parameters
 import pyqtgraph as pg
-from scipy.signal import find_peaks,peak_widths
+from scipy.signal import find_peaks,peak_widths, hilbert
 import seaborn as sns
 
 from PyQt5.QtWidgets import (
@@ -33,6 +34,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QStandardItemModel, QStandardItem, QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QPalette, QPixmap,QIcon,QKeySequence
 from PyQt5.QtCore import Qt, QRegExp,Signal
+
+from astropy.timeseries import LombScargle
 
 sns.set_context("paper")
 sns.set(font_scale=1, style='white')
@@ -349,11 +352,11 @@ class FitManager:
             fi.close()
             for line in self.lines:
                 arguments=line[:-1].split("|")
-                self.add_fit_function(*arguments)
+                self.add_fit_function(*arguments,save=False)
 
         else:
-            self.add_fit_function("sine", "a * np.sin(b * x) + c")
-            self.add_fit_function("cosine", "a * np.cos(b * x) + c")
+            self.add_fit_function("sine", "a * np.sin(b * x + phi) + c")
+            self.add_fit_function("cosine", "a * np.cos(b * x + phi) + c")
             self.add_fit_function("exp_decay", "d * np.exp(-e * x)")
             self.add_fit_function("2d_contour", "a * x ** 2 + b * y ** 2 + c * x * y + d * x + e * y + f")
             self.add_fit_function("exponential", "a * np.exp(b * x) + c")
@@ -361,15 +364,15 @@ class FitManager:
             self.add_fit_function("linear", "a * x + b")
             self.add_fit_function("quadratic", "a * x**2 + b * x + c")
             self.add_fit_function("cubic", "a * x**3 + b * x**2 + c * x + d")
-            self.add_fit_function("gaussian", "a * np.exp(-((x - b)**2) / (2 * c**2))")
-            self.add_fit_function("lorentzian", "a / (1 + ((x - b) / c)**2)")
+            self.add_fit_function("gaussian", "a * np.exp(-((x - b)**2) / (2 * c**2)) + o")
+            self.add_fit_function("lorentzian", "a / (1 + ((x - b) / c)**2) + o")
             self.add_fit_function("power_law", "a * x**b + c")
             self.add_fit_function("sigmoid", "a / (1 + np.exp(-b * (x - c)))")
             self.add_fit_function("hyperbolic_tangent", "a * np.tanh(b * x) + c")
             self.add_fit_function("rectangular", "a * (np.abs(x) <= b)")
             self.add_fit_function("heaviside", "a * (x >= b)")
             self.add_fit_function("step", "a * (x >= b) + c")
-            self.add_fit_function("damped_sine", "a * np.exp(-b * x) * np.sin(c * x + d)")
+            self.add_fit_function("damped_sine", "a * np.exp(-b * x) * np.sin(c * x + d) + offset")
             self.add_fit_function("fourier_series", "a0 + a1 * np.cos(omega * x) + b1 * np.sin(omega * x)")
             self.add_fit_function("logistic_growth", "L / (1 + np.exp(-k * (x - x0)))")
             self.add_fit_function("weibull", "(a / b) * (x / b)**(a - 1) * np.exp(-(x / b)**a)")
@@ -380,129 +383,442 @@ class FitManager:
             #self.add_fit_function("erf", "a * scipy.special.erf(b * (x - c))")
             #self.add_fit_function("bessel", "a * scipy.special.jn(n, b * x)")
 
+    # ----------------------
+    # Hilfsfunktionen
+    # ----------------------
+    def _safe_median_diff(self,x):
+        x = np.asarray(x)
+        if x.size < 2:
+            return 1.0
+        diffs = np.diff(x)
+        diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+        if diffs.size == 0:
+            # fallback to uniform spacing over interval
+            span = float(x[-1] - x[0]) if x.size > 1 else 1.0
+            return span / max(1, x.size - 1)
+        md = float(np.median(diffs))
+        if md <= 0 or not np.isfinite(md):
+            span = float(x[-1] - x[0]) if x.size > 1 else 1.0
+            return span / max(1, x.size - 1)
+        return md
 
-    def guess_parameters(self,function_name, x, y):
+    # ----------------------
+    # Updated sparse-data helpers
+    # ----------------------
+    def _fft_peak_frequency(self, x, y):
+        """
+        Bestimmt dominante Frequenz in cycles/unit-x.
+        Für sehr wenige Punkte (<10), verwendet Lomb-Scargle periodogram
+        für robustere Frequenzschätzung.
+        """
+        x = np.asarray(x)
+        y = np.asarray(y)
+        N = y.size
+        if N < 3:
+            return 0.0
+        y_centered = y - np.nanmean(y)
+
+        if N < 10:
+            # sparse data: use Lomb-Scargle
+            try:
+                frequency, power = LombScargle(x, y_centered).autopower()
+                if len(frequency) == 0:
+                    return 0.0
+                best_idx = np.argmax(power)
+                return float(frequency[best_idx])
+            except Exception:
+                pass
+
+        # normal FFT approach
+        dx = self._safe_median_diff(x)
+        try:
+            Npad = 2 ** (int(np.ceil(np.log2(max(4, N)))) + 2)
+        except Exception:
+            Npad = 4 * N
+        fft_vals = np.fft.rfft(y_centered, n=Npad)
+        freqs = np.fft.rfftfreq(Npad, dx)
+        mags = np.abs(fft_vals)
+        if mags.size > 0:
+            mags[0] = 0.0
+        if freqs.size == 0 or np.all(mags <= 1e-12):
+            # fallback to zero-crossings / peak spacing
+            pos, _ = find_peaks(y_centered)
+            neg, _ = find_peaks(-y_centered)
+            all_peaks = np.sort(np.concatenate((pos, neg))) if (pos.size + neg.size) > 0 else np.array([], dtype=int)
+            if all_peaks.size >= 2:
+                px = x[all_peaks]
+                median_period = np.median(np.diff(px))
+                if median_period > 0:
+                    return 1.0 / median_period
+            total_period = float(x[-1] - x[0])
+            return 1.0 / total_period if total_period > 0 else 0.0
+        peak_idx = int(np.argmax(mags))
+        peak_freq = float(freqs[peak_idx])
+        if not np.isfinite(peak_freq) or peak_freq <= 1e-12:
+            # fallback
+            pos, _ = find_peaks(y_centered)
+            neg, _ = find_peaks(-y_centered)
+            all_peaks = np.sort(np.concatenate((pos, neg))) if (pos.size + neg.size) > 0 else np.array([], dtype=int)
+            if all_peaks.size >= 2:
+                px = x[all_peaks]
+                median_period = np.median(np.diff(px))
+                if median_period > 0:
+                    return 1.0 / median_period
+            total_period = float(x[-1] - x[0])
+            return 1.0 / total_period if total_period > 0 else 0.0
+        return peak_freq
+
+    def _estimate_damped_sine_params(self,x, y, force_undamped_if_sparse=True):
+        """
+        Schätzt (a, b, c, d, offset) für
+        a * exp(-b*x) * sin(c*x + d) + offset
+        - c: angular frequency (rad/unit)
+        - b: decay-rate (>=0)
+        force_undamped_if_sparse: setzt b=0 falls sehr wenige Punkte (<6)
+        """
+        x = np.asarray(x)
+        y = np.asarray(y)
+        N = x.size
+        if N < 3:
+            a = float((np.nanmax(y) - np.nanmin(y)) / 2.0) if y.size > 0 else 1.0
+            c = 2.0 * np.pi / (float(x[-1] - x[0]) + 1e-12) if x.size > 1 else 1.0
+            return {"a": a, "b": 0.0, "c": c, "d": 0.0, "offset": float(np.nanmean(y))}
+
+        offset = float(np.nanmean(y))
+        y_centered = y - offset
+        f = self._fft_peak_frequency(x, y_centered)
+        c = 2.0 * np.pi * f if f > 0 else 2.0 * np.pi / (float(x[-1] - x[0]) + 1e-12)
+        a, phi, _ = self._ls_amplitude_phase_for_freq(x, y, c)
+
+        # Dämpfung nur, wenn genügend Punkte
+        b = 0.0
+        if not (force_undamped_if_sparse and N < 6):
+            try:
+                env = np.abs(hilbert(y_centered))
+                pos = env > (np.nanmax(env) * 1e-6)
+                if np.sum(pos) >= 3:
+                    xs = x[pos]
+                    ln_env = np.log(env[pos] + 1e-12)
+                    A = np.column_stack((xs, np.ones_like(xs)))
+                    sol, *_ = np.linalg.lstsq(A, ln_env, rcond=None)
+                    slope = float(sol[0]) if sol.size > 0 else 0.0
+                    b = max(-slope, 0.0)
+            except Exception:
+                b = 0.0
+
+        return {"a": float(a), "b": float(b), "c": float(c), "d": float(phi), "offset": float(offset)}
+
+    def _ls_amplitude_phase_for_freq(self,x, y, omega):
+        """
+        Least-squares für a*sin(omega*x) + phase.
+        Falls <4 Punkte, verwendet einfache max-min Schätzung.
+        """
+        x = np.asarray(x)
+        y = np.asarray(y)
+        if omega == 0 or not np.isfinite(omega) or x.size < 4:
+            # fallback
+            a = (np.nanmax(y) - np.nanmin(y)) / 2.0
+            phi = 0.0
+            offset = float(np.nanmean(y))
+            return a, phi, offset
+
+        y_mean = float(np.nanmean(y))
+        y_centered = y - y_mean
+        S = np.column_stack((np.sin(omega * x), np.cos(omega * x)))
+        try:
+            sol, *_ = np.linalg.lstsq(S, y_centered, rcond=None)
+            C, D = float(sol[0]), float(sol[1])
+        except Exception:
+            C, D = 0.0, 0.0
+        a = float(np.hypot(C, D))
+        phi = float(np.arctan2(D, C))
+        return a, phi, y_mean
+
+    def _estimate_damped_sine_params(self,x, y):
+        """
+        Schätzt (a, b, c, d, offset) für a * exp(-b*x) * sin(c*x + d) + offset
+        - c: angular frequency (rad/unit)
+        - b: decay-rate (>=0)
+        """
+        x = np.asarray(x)
+        y = np.asarray(y)
+        if x.size < 3:
+            a = float((np.nanmax(y) - np.nanmin(y)) / 2.0) if y.size > 0 else 1.0
+            c = 2.0 * np.pi / (float(x[-1] - x[0]) + 1e-12) if x.size > 1 else 1.0
+            return {"a": a, "b": 0.0, "c": c, "d": 0.0, "offset": float(np.nanmean(y))}
+        offset = float(np.nanmean(y))
+        y_centered = y - offset
+        # dominante Frequenz (cycles/unit) -> Omega (rad/unit)
+        f = self._fft_peak_frequency(x, y_centered)
+        c = 2.0 * np.pi * f if f > 0 else 2.0 * np.pi / (float(x[-1] - x[0]) + 1e-12)
+        a, phi, _ = self._ls_amplitude_phase_for_freq(x, y, c)
+        # Schätzung der Dämpfungsrate aus Hüllkurve (Hilbert)
+        b = 0.0
+        try:
+            env = np.abs(hilbert(y_centered))
+            pos = env > (np.nanmax(env) * 1e-6)
+            if np.sum(pos) >= 3:
+                xs = x[pos]
+                ln_env = np.log(env[pos] + 1e-12)
+                A = np.column_stack((xs, np.ones_like(xs)))
+                sol, *_ = np.linalg.lstsq(A, ln_env, rcond=None)
+                slope = float(sol[0]) if sol.size > 0 else 0.0
+                # ln(env) ~ -b*x + const -> b = -slope (>=0)
+                b = max(-slope, 0.0)
+            else:
+                b = 0.0
+        except Exception:
+            b = 0.0
+
+        Range=x[-1]-x[0]
+        if Range> 2*np.pi -0.1 and Range< 2*np.pi +0.1: # so probably a sweep over 2pi -> set it manually because the guesser often gets it wrong
+            b=1
+        
+        return {"a": float(a), "b": float(b), "c": float(c), "d": float(phi), "offset": float(offset)}
+
+    # ----------------------
+    # Utility: sichere Extraktion von Parametern aus Ausdruck
+    # ----------------------
+    @staticmethod
+    def _extract_variable_names_from_expr(expr: str):
+        """
+        Extrahiert wahrscheinliche Variablennamen aus einem Ausdruck,
+        filtert bekannte Funktions-/Namen wie 'np', 'sin', 'exp', 'x', 'y', etc.
+        """
+        if not expr:
+            return []
+        tokens = set(re.findall(r"[A-Za-z_]\w*", expr))
+        blacklist = {
+            "np", "sin", "cos", "exp", "log", "tan", "sqrt", "where", "abs", "pi",
+            "np", "x", "y", "gamma", "np", "npvar", "min", "max", "mean", "median",
+            "npnan", "nan", "inf", "isfinite", "np", "lambda", "return"
+        }
+        # filter out tokens that are python builtins or numeric-like names
+        vars_ = [t for t in tokens if t not in blacklist and not t.isdigit()]
+        # sort for determinismus
+        vars_.sort()
+        return vars_
+    
+    def guess_parameters(self, function_name: str, x, y):
         """
         Generate initial guesses for parameters of a given fitting function.
-
-        Parameters:
-        - function_name (str): Name of the fitting function.
-        - x (np.array): Independent variable.
-        - y (np.array): Dependent variable.
-
-        Returns:
-        - dict: A dictionary with parameter names as keys and initial guesses as values.
+        Unterstützt viele Modelltypen; liefert robuste Fallbacks.
+        Rückgabe: dict mit Parametern (float).
         """
+        x = np.asarray(x)
+        y = np.asarray(y)
+
+        # handle NaNs: ignore NaN entries
+        if x.size != y.size:
+            raise ValueError("x and y must have same length")
+        mask = np.isfinite(x) & np.isfinite(y)
+        if not np.all(mask):
+            x = x[mask]
+            y = y[mask]
+        if x.size == 0:
+            raise ValueError("No valid data points provided")
+
+        fn = function_name.lower()
         initial_guesses = {}
 
-        if function_name == "sine":
-            initial_guesses = {
-                "a": (np.max(y) - np.min(y)) / 2,  # Amplitude
-                "b": 2 * np.pi / (x[np.argmax(np.gradient(np.sign(np.gradient(y))))] - x[0]),  # Frequency
-                "c": np.mean(y),  # Offset
-            }
-        elif function_name == "cosine":
-            initial_guesses = {
-                "a": (np.max(y) - np.min(y)) / 2,  # Amplitude
-                "b": 2 * np.pi / (x[np.argmax(np.gradient(np.sign(np.gradient(y))))] - x[0]),  # Frequency
-                "c": np.mean(y),  # Offset
-            }
-        elif function_name == "exp_decay":
-            initial_guesses = {
-                "d": np.max(y),  # Initial amplitude
-                "e": 1 / (x[-1] - x[0]),  # Decay rate
-            }
-        elif function_name == "2d_contour":
-            initial_guesses = {k: 1.0 for k in ["a", "b", "c", "d", "e", "f"]}  # Default to 1.0
-        elif function_name == "exponential":
-            initial_guesses = {
-                "a": y[0] - np.min(y),  # Initial amplitude
-                "b": 1 / (x[-1] - x[0]),  # Exponential growth/decay rate
-                "c": np.min(y),  # Offset
-            }
-        elif function_name == "logarithmic":
-            initial_guesses = {
-                "a": 1.0,
-                "b": 1.0,
-                "c": np.min(y),
-            }
-        elif function_name == "linear":
-            slope, intercept = np.polyfit(x, y, 1)
-            initial_guesses = {"a": slope, "b": intercept}
-        elif function_name == "quadratic":
-            coeffs = np.polyfit(x, y, 2)
-            initial_guesses = {"a": coeffs[0], "b": coeffs[1], "c": coeffs[2]}
-        elif function_name == "cubic":
-            coeffs = np.polyfit(x, y, 3)
-            initial_guesses = {"a": coeffs[0], "b": coeffs[1], "c": coeffs[2], "d": coeffs[3]}
-        elif function_name == "gaussian":
-            initial_guesses = {
-                "a": np.max(y),
-                "b": x[np.argmax(y)],
-                "c": (x[-1] - x[0]) / 6,  # Rough FWHM estimate
-            }
-        elif function_name == "lorentzian":
-            initial_guesses = {
-                "a": np.max(y),
-                "b": x[np.argmax(y)],
-                "c": (x[-1] - x[0]) / 10,
-            }
-        elif function_name == "power_law":
-            initial_guesses = {"a": 1.0, "b": 1.0, "c": np.min(y)}
-        elif function_name == "sigmoid":
-            initial_guesses = {
-                "a": np.max(y),
-                "b": 1.0,
-                "c": x[np.argmin(np.abs(y - np.mean(y)))],
-            }
-        elif function_name == "hyperbolic_tangent":
-            initial_guesses = {
-                "a": (np.max(y) - np.min(y)) / 2,
-                "b": 1.0,
-                "c": np.mean(y),
-            }
-        elif function_name == "rectangular":
-            initial_guesses = {"a": np.max(y), "b": (x[-1] - x[0]) / 2}
-        elif function_name == "heaviside":
-            initial_guesses = {"a": np.max(y), "b": np.mean(x)}
-        elif function_name == "step":
-            initial_guesses = {"a": np.max(y), "b": np.mean(x), "c": np.min(y)}
-        elif function_name == "damped_sine":
-            initial_guesses = {
-                "a": (np.max(y) - np.min(y)) / 2,
-                "b": 1 / (x[-1] - x[0]),
-                "c": 2 * np.pi / (x[np.argmax(np.gradient(np.sign(np.gradient(y))))] - x[0]),
-                "d": 0.0,
-            }
-        elif function_name == "fourier_series":
-            initial_guesses = {
-                "a0": np.mean(y),
-                "a1": (np.max(y) - np.min(y)) / 2,
-                "b1": 0.0,
-                "omega": 2 * np.pi / (x[-1] - x[0]),
-            }
-        elif function_name == "logistic_growth":
-            initial_guesses = {
-                "L": np.max(y),
-                "k": 1.0,
-                "x0": x[np.argmin(np.abs(y - np.max(y) / 2))],
-            }
-        elif function_name == "weibull":
-            initial_guesses = {"a": 1.5, "b": np.mean(x)}
-        elif function_name == "gamma":
-            initial_guesses = {"a": 2.0, "b": np.mean(x)}
-        elif function_name == "polynomial_4th":
-            coeffs = np.polyfit(x, y, 4)
-            initial_guesses = {"a": coeffs[0], "b": coeffs[1], "c": coeffs[2], "d": coeffs[3], "e": coeffs[4]}
-        elif function_name == "double_exponential":
-            initial_guesses = {
-                "a": y[0],
-                "b": 1 / (x[-1] - x[0]),
-                "c": y[-1] - y[0],
-                "d": 1 / (x[-1] - x[0]) * 2,
-            }
-        elif function_name == "softplus":
-            initial_guesses = {"a": 1.0, "b": 1.0, "c": np.min(y)}
+        # --- Sinus ---
+        if fn == "sine":
+            # Modell: a*sin(b*x + phi) + c
+            freq = self._fft_peak_frequency(x, y)
+            if freq > 0:
+                b_guess = 2.0 * np.pi * freq
+            else:
+                span = float(x[-1] - x[0]) if x.size > 1 else 1.0
+                b_guess = 2.0 * np.pi / (span + 1e-12)
+            a_guess, phi_guess, c_guess = self._ls_amplitude_phase_for_freq(x, y, b_guess)
+            if not np.isfinite(a_guess) or a_guess < 1e-8:
+                a_guess = float((np.nanmax(y) - np.nanmin(y)) / 2.0)
+            if not np.isfinite(c_guess):
+                c_guess = float(np.nanmean(y))
+
+            Range=x[-1]-x[0]
+            if Range> 2*np.pi -0.1 and Range< 2*np.pi +0.1: # so probably a sweep over 2pi -> set it manually because the guesser often gets it wrong
+                b_guess=1
+
+            initial_guesses = {"a": float(a_guess), "b": float(b_guess), "c": float(c_guess), "phi": float(phi_guess)}
+            return initial_guesses
+
+        # --- Cosinus (ähnlich) ---
+        if fn == "cosine":
+            res = self.guess_parameters("sine", x, y)
+            if "phi" in res:
+                res["phi"] = float(res["phi"] - np.pi / 2.0)
+            return res
+
+        # --- Gedämpfter Sinus ---
+        if fn == "damped_sine":
+            res = self._estimate_damped_sine_params(x, y)
+            initial_guesses = {"a": res["a"], "b": res["b"], "c": res["c"], "d": res["d"], "offset": res["offset"]}
+            return initial_guesses
+
+        # --- Fourier series ---
+        if fn == "fourier_series":
+            freq = self._fft_peak_frequency(x, y)
+            omega_guess = 2.0 * np.pi * freq if freq > 0 else 2.0 * np.pi / (float(x[-1] - x[0]) + 1e-12)
+            a0 = float(np.nanmean(y))
+            a1 = float((np.nanmax(y) - np.nanmin(y)) / 2.0)
+            b1 = 0.0
+            initial_guesses = {"a0": a0, "a1": a1, "b1": b1, "omega": float(omega_guess)}
+            return initial_guesses
+
+        # --- Exponential / decay / double_exponential ---
+        if fn == "exp_decay":
+            d = float(np.nanmax(y))
+            e = 1.0 / (float(x[-1] - x[0]) + 1e-12)
+            initial_guesses = {"d": d, "e": e}
+            return initial_guesses
+
+        if fn == "double_exponential":
+            a = float(y[0]) if y.size > 0 and np.isfinite(y[0]) else float(np.nanmax(y))
+            b = 1.0 / (float(x[-1] - x[0]) + 1e-12)
+            c = float(np.nanmin(y))
+            d = max(2.0 / (float(x[-1] - x[0]) + 1e-12), 1e-12)
+            initial_guesses = {"a": a, "b": b, "c": c, "d": d}
+            return initial_guesses
+
+        # --- Gaussian / Lorentzian ---
+        if fn == "gaussian":
+            a = float(np.nanmax(abs(y-np.mean(y)))+np.mean(y)) #assumes there are more points outside the gaussian than inside
+            max_index=np.argwhere(abs(y-np.mean(y))+np.mean(y)==a)
+            b = float(x[int(max_index)])
+            a*=[-1,1][y[int(max_index)]>=np.mean(y)]
+            c = float((float(x[-1] - x[0]) / 6.0) if x.size > 1 else 1.0)
+            o=float(np.nanmin(abs(y-np.mean(y)))+np.mean(y)) #assumes there are more points outside the gaussian than inside
+            initial_guesses = {"a": a, "b": b, "c": c,"o":o}
+            return initial_guesses
+
+        if fn == "lorentzian":
+            a = float(np.nanmax(abs(y-np.mean(y)))+np.mean(y))
+            max_index=np.argwhere(abs(y-np.mean(y))+np.mean(y)==a)
+            b = float(x[int(max_index)])
+            a*=[-1,1][y[int(max_index)]>=np.mean(y)]
+            c = float((float(x[-1] - x[0]) / 10.0) if x.size > 1 else 1.0)
+            o=float(np.nanmin(abs(y-np.mean(y)))+np.mean(y)) #assumes there are more points outside the lorentzian than inside
+            initial_guesses = {"a": a, "b": b, "c": c, "o":o}
+            return initial_guesses
+
+        # --- Polynomial fits: sichere Polyfit-Fallbacks ---
+        if fn == "linear":
+            try:
+                slope, intercept = np.polyfit(x, y, 1)
+            except Exception:
+                slope, intercept = 0.0, float(np.nanmean(y))
+            initial_guesses = {"a": float(slope), "b": float(intercept)}
+            return initial_guesses
+
+        if fn == "quadratic":
+            try:
+                coeffs = np.polyfit(x, y, 2)
+                initial_guesses = {"a": float(coeffs[0]), "b": float(coeffs[1]), "c": float(coeffs[2])}
+            except Exception:
+                initial_guesses = {"a": 0.0, "b": 0.0, "c": float(np.nanmean(y))}
+            return initial_guesses
+
+        if fn == "cubic":
+            try:
+                coeffs = np.polyfit(x, y, 3)
+                initial_guesses = {"a": float(coeffs[0]), "b": float(coeffs[1]), "c": float(coeffs[2]), "d": float(coeffs[3])}
+            except Exception:
+                initial_guesses = {"a": 0.0, "b": 0.0, "c": 0.0, "d": float(np.nanmean(y))}
+            return initial_guesses
+
+        if fn == "polynomial_4th":
+            try:
+                coeffs = np.polyfit(x, y, 4)
+                initial_guesses = {"a": float(coeffs[0]), "b": float(coeffs[1]), "c": float(coeffs[2]), "d": float(coeffs[3]), "e": float(coeffs[4])}
+            except Exception:
+                initial_guesses = {"a": 0.0, "b": 0.0, "c": 0.0, "d": 0.0, "e": float(np.nanmean(y))}
+            return initial_guesses
+
+        # --- Sigmoid/Logistic ---
+        if fn == "sigmoid":
+            a = float(np.nanmax(y) - np.nanmin(y))
+            b = 1.0
+            # x0: position where y crosses midpoint between min and max
+            mid = float(np.nanmin(y) + (np.nanmax(y) - np.nanmin(y)) / 2.0)
+            if np.any(np.isfinite(y)):
+                x0 = float(x[int(np.nanargmin(np.abs(y - mid)))])
+            else:
+                x0 = float(np.nanmean(x))
+            initial_guesses = {"a": a, "b": b, "c": x0}
+            return initial_guesses
+
+        if fn == "logistic_growth":
+            L = float(np.nanmax(y))
+            k = 1.0
+            mid_val = L / 2.0
+            if np.any(np.isfinite(y)):
+                x0 = float(x[int(np.nanargmin(np.abs(y - mid_val)))])
+            else:
+                x0 = float(np.nanmean(x))
+            initial_guesses = {"L": L, "k": k, "x0": x0}
+            return initial_guesses
+
+        # --- Weibull / gamma ---
+        if fn == "weibull":
+            initial_guesses = {"a": 1.5, "b": float(np.nanmean(x))}
+            return initial_guesses
+
+        if fn == "gamma":
+            initial_guesses = {"a": 2.0, "b": float(np.nanmean(x))}
+            return initial_guesses
+
+        # --- Power law / softplus / rectangular / heaviside / step ---
+        if fn == "power_law":
+            initial_guesses = {"a": 1.0, "b": 1.0, "c": float(np.nanmin(y))}
+            return initial_guesses
+
+        if fn == "softplus":
+            initial_guesses = {"a": 1.0, "b": 1.0, "c": float(np.nanmin(y))}
+            return initial_guesses
+
+        if fn == "rectangular":
+            initial_guesses = {"a": float(np.nanmax(y)), "b": float((x[-1] - x[0]) / 2.0)}
+            return initial_guesses
+
+        if fn == "heaviside":
+            initial_guesses = {"a": float(np.nanmax(y)), "b": float(np.nanmean(x))}
+            return initial_guesses
+
+        if fn == "step":
+            initial_guesses = {"a": float(np.nanmax(y)), "b": float(np.nanmean(x)), "c": float(np.nanmin(y))}
+            return initial_guesses
+
+        # --- Exponential / logarithmic / other generic ---
+        if fn == "exponential":
+            base = float(np.nanmin(y)) if np.any(np.isfinite(y)) else 0.0
+            a0 = float(y[0] - base) if y.size > 0 and np.isfinite(y[0]) else 1.0
+            b0 = 1.0 / (float(x[-1] - x[0]) + 1e-12)
+            initial_guesses = {"a": a0, "b": b0, "c": base}
+            return initial_guesses
+
+        if fn == "logarithmic":
+            initial_guesses = {"a": 1.0, "b": 1.0, "c": float(np.nanmin(y))}
+            return initial_guesses
+
+        # --- Default fallback: generische Werte basierend auf Ausdrucksvariablen ---
+        expr = self.fit_functions.get(function_name, "") or ""
+        varnames = self._extract_variable_names_from_expr(expr)
+        # heuristische Zuweisungen
+        if varnames:
+            for var in varnames:
+                lower = var.lower()
+                if lower in {"a", "amp", "amplitude"}:
+                    initial_guesses[var] = float((np.nanmax(y) - np.nanmin(y)) / 2.0)
+                elif lower in {"b", "offset", "c", "o", "offset"}:
+                    initial_guesses[var] = float(np.nanmean(y))
+                elif lower in {"phi", "phase", "theta", "d"}:
+                    initial_guesses[var] = 0.0
+                else:
+                    initial_guesses[var] = 1.0
+        else:
+            # absoluter Fallback
+            initial_guesses = {"a": float((np.nanmax(y) - np.nanmin(y)) / 2.0), "b": 1.0, "c": float(np.nanmean(y))}
 
         return initial_guesses
 
@@ -696,7 +1012,7 @@ class FitManager:
 
         return res
 
-    def add_fit_function(self, name, expression, display_name=None):
+    def add_fit_function(self, name, expression, display_name=None,save=True):
         if name in self.fits:
             #print(f"Fit function '{name}' already exists.")
             return
@@ -726,10 +1042,11 @@ class FitManager:
         self.fit_parameters[name] = self.fits[name]["parameters"]
 
         #save the new fit function
-        self.lines=self.lines+["|".join([name,expression,display_name or name])+"\n"]
-        fi=open("fit_functions.txt","w")
-        fi.writelines(self.lines)
-        fi.close()
+        if save:
+            self.lines=self.lines+["|".join([name,expression,display_name or name])+"\n"]
+            fi=open("fit_functions.txt","w")
+            fi.writelines(self.lines)
+            fi.close()
 
 
     def prepare_parameters(self,parameter_combinations,overwrite=False): # ensures self.fits[name]["parameters"] is filled with fit parameters for the specified parameter combinations
@@ -791,8 +1108,16 @@ class DataProcessor:
                 self.folder=[self.folder]
             new=True
             for folder in self.folder:
-                store = pa.HDFStore(os.path.join(folder,'data.hdf'))
-                df = store['/df']
+                try:
+                    store = pa.HDFStore(os.path.join(folder,'data.hdf'))
+                    df = store['/df']
+                except:
+                    store = pa.HDFStore(os.path.join(folder,'data_revisited.hdf'))
+                    df = store['/df']
+
+                #for col, dtype in df._Datatypes.items():
+                #    if dtype == bool and df[col].dtype == object:
+                #        df[col] = df[col].map({'True': True, 'False': False})
 
                 #if getattr(store.get_storer("df").attrs, "Datatypes"):
                 try:
@@ -801,10 +1126,59 @@ class DataProcessor:
                         setattr(df, f"_{key}", getattr(store.get_storer("df").attrs, key))
                 except Exception as e:
                     print(2,e)
-                    for key in ["Datatypes"]:
-                        setattr(df, f"_{key}", df.dtypes)
 
-                df = df.astype(df._Datatypes)
+                    #example that has most of standard parameters
+                    dtypes= {'sweeps': np.dtype('int32'),
+                        'A2_power': np.dtype('int32'),
+                        't_read': np.dtype('float64'),
+                        'n_ssr2': np.dtype('int32'),
+                        'n_ssr1': np.dtype('int32'),
+                        'init_nuc_state': np.dtype('O'),
+                        'laser': np.dtype('O'),
+                        'init_time': np.dtype('int32'),
+                        'init_amp': np.dtype('float64'),
+                        'init_state': np.dtype('O'),
+                        'flip_state': np.dtype('O'),
+                        'Gate_MW_open': np.dtype('int32'),
+                        'Gate_RF_open': np.dtype('int32'),
+                        'tau': np.dtype('float64'),
+                        'readout_proj': np.dtype('int32'),
+                        'result_0': np.dtype('float64'),
+                        'trace': np.dtype('O'),
+                        'ple_A2': np.dtype('float64'),
+                        'ple_A1': np.dtype('float64'),
+                        'average_counts': np.dtype('float64'),
+                        'events': np.dtype('int64'),
+                        'thresholds': np.dtype('O'),
+                        'start_time': np.dtype('<M8[ns]'),
+                        'end_time': np.dtype('<M8[ns]'),
+                        'mw_mixing_frequency': np.dtype('float64'),
+                        'local_oscillator_freq': np.dtype('float64'),
+                        'confocal_x': np.dtype('float64'),
+                        'confocal_y': np.dtype('float64'),
+                        'confocal_z': np.dtype('float64'),
+                        'A2_Power': np.dtype('float64'),
+                        'windows_ps': np.dtype('O'),
+                        'delays_ps': np.dtype('O')}
+                    
+                    print("21")
+                            
+                                
+                    for key,dtype in dtypes.items():
+                        try:
+                            print(key)
+                            df = df.astype({key:dtype})
+                        except:
+                            pass
+
+                    setattr(df, "_Datatypes", df.dtypes)
+
+                    
+                try:
+                    df = df.astype(df._Datatypes)
+                except:
+                    print("could not cast dtypes")
+
                 df["__None__"]=0
 
                 added_observations=[]
@@ -813,7 +1187,6 @@ class DataProcessor:
                     if col.startswith("result_"):
                         df[f"recalculated_{col.replace('result_','')}"]=0.0#self.df[col]
                         added_observations.append(f"recalculated_{col.replace('result_','')}")
-
                 for key in ["parameter_names","observation_names","dtypes"]:
                     setattr(df, f"_{key}", getattr(store.get_storer("df").attrs, key))
 
@@ -826,8 +1199,14 @@ class DataProcessor:
                     for key in ["Datatypes"]:
                         setattr(df, f"_{key}", df.dtypes)
 
-                df._Datatypes["__None__"]=np.dtype("int16")
+                    
+                try:
+                    df._Datatypes["__None__"]=np.dtype("int16")
+                except Exception as e:
+                    print("error",e)
+
                 store.close()
+                
 
                 if new:
                     self.df=df
@@ -880,6 +1259,7 @@ class DataProcessor:
         self.measurement_parameters={name:self.df[name].unique() for name in self.df._parameter_names+["__None__"]}
         self.measurement_observations={name:self.df[name].unique() for name in self.df._observation_names+added_observations}
 
+
     def make_trace_to_list(self):
         def fix_and_convert_list(string):
             try:
@@ -895,6 +1275,74 @@ class DataProcessor:
 
         # self.df["Trace"]=self.df.trace.appy(fix_and_convert_list)
         self.df["Trace"] = traces
+
+        self.calculate_avrg_counts()
+
+    def calculate_avrg_counts(self):
+        """
+        Calculate average photon counts for each SSR (Single Shot Readout)
+        and add them as new columns to self.df.
+
+        Columns will be named average_counts_SSR0, average_counts_SSR1, ...
+        """
+        if not hasattr(self, "ana_seq") or len(self.ana_seq) == 0:
+            print("Cannot calculate average counts: ana_seq not defined yet.")
+            return
+
+        # Ensure trace data is converted to lists
+        if "Trace" not in self.df.columns:
+            print("No Trace column found; please run make_trace_to_list() first.")
+            return
+
+        n_ssr = len(self.ana_seq)
+        n_reps = self.simultaneous_measurements
+
+        # counts_all=np.array(list(filtered_df.Trace)[0])
+        # offset_index = self.get_offset(filtered_df)
+
+        # ssrs=[]
+        # for i in range(len(self.ana_seq)):
+        #     ssrs.append(counts_all[i+int(offset_index*len(self.ana_seq))::int(self.simultaneous_measurements)*len(self.ana_seq)])
+
+        # Initialize columns
+        for i in range(n_ssr):
+            col_name = f"SSR{i+1}_average_counts"
+            self.df[col_name] = np.nan
+
+        for i in range(n_ssr):
+            col_name = f"SSR{i+1}_filtered_average_counts"
+            self.df[col_name] = np.nan
+
+        for row_index, trace in enumerate(self.df["Trace"]):
+            if not isinstance(trace, (list, np.ndarray)):
+                continue
+
+            trace = np.array(trace)
+            # Split the trace into SSR segments for this measurement
+            ssrs = []
+            for i in range(n_ssr):
+                ssrs.append(trace[i::n_ssr * n_reps])
+
+            # Compute average count per SSR and store it
+            for i, ssr in enumerate(ssrs):
+                avg = np.mean(ssr) if len(ssr) > 0 else np.nan
+                self.df.at[row_index, f"SSR{i+1}_average_counts"] = avg
+
+            
+
+        print("Average counts per SSR added to dataframe.")
+        # --- Update measurement_observations with the new average count columns ---
+        for i in range(n_ssr):
+            col_name = f"SSR{i+1}_average_counts"
+            if col_name not in self.measurement_observations:
+                self.measurement_observations[col_name] = self.df[col_name].unique()
+
+            col_name = f"SSR{i+1}_filtered_average_counts"
+            if col_name not in self.measurement_observations:
+                self.measurement_observations[col_name] = self.df[col_name].unique()
+
+
+
 
     def extract_data(self):
         def try_convert(val):
@@ -971,7 +1419,17 @@ class DataProcessor:
                     prepared_df = filtered_df.groupby([self.x_axis_param,difference_param], as_index=False).agg("mean",
                                                                                                numeric_only=True)
                     x = np.array(prepared_df.loc[prepared_df[difference_param]==prepared_df[difference_param].unique()[0]][self.x_axis_param])
-                    y = np.array(prepared_df.loc[prepared_df[difference_param]==prepared_df[difference_param].unique()[0]][self.y_axis_param])-np.array(prepared_df.loc[prepared_df[self.difference_param]==prepared_df[self.difference_param].unique()[1]][self.y_axis_param])
+                    try:
+                        y = np.array(prepared_df.loc[prepared_df[difference_param]==prepared_df[difference_param].unique()[0]][self.y_axis_param])-np.array(prepared_df.loc[prepared_df[self.difference_param]==prepared_df[self.difference_param].unique()[1]][self.y_axis_param])
+                    except:
+                        l1=np.array(prepared_df.loc[prepared_df[difference_param]==prepared_df[difference_param].unique()[0]][self.y_axis_param])
+                        l2=np.array(prepared_df.loc[prepared_df[self.difference_param]==prepared_df[self.difference_param].unique()[1]][self.y_axis_param])
+                        L1,L2=len(l1),len(l2)
+                        if L2<L1:
+                            l1=l1[:L2]
+                        else:
+                            l2=l2[:L1]
+                        y=l1-l2
 
 
                 self.data[combination] = (x, y, [])
@@ -1061,7 +1519,7 @@ class DataProcessor:
         msks_neg=[]
         init_mask=np.full(len(ssrs[0]),True) #at first keep all values
         for i,ssr in enumerate(ssrs):
-            if self.ana_seq[i][0] == "init":
+            if thresholds[i]["treat_as_CB"] == "init":
                 rule=thresholds[i]["combo_box"]
                 num_index=f'num{["1","2"][rule=="<"]}_input'
                 msk=eval(f'ssr {rule}= ({thresholds[i]["slider"]} {["+","-"][rule=="<"]} {thresholds[i][num_index]})')
@@ -1071,7 +1529,7 @@ class DataProcessor:
         counter=0
         i_ssrs=[] #initialized ssrs
         for i,ssr in enumerate(ssrs):
-            if self.ana_seq[i][0] == "result":
+            if thresholds[i]["treat_as_CB"] == "result":
                 i_ssr=ssr[init_mask]
                 i_ssrs.append(i_ssr)
 
@@ -1093,6 +1551,11 @@ class DataProcessor:
 
                 self.df.at[list(filtered_df.index)[0],"recalculated_"+str(counter)]=value
                 counter+=1
+
+            avg = np.mean(ssr[init_mask]) if len(ssr[init_mask]) > 0 else np.nan
+            self.df.at[list(filtered_df.index)[0], f"SSR{i+1}_filtered_average_counts"] = avg
+
+
 
 
 
@@ -1180,6 +1643,7 @@ class DataProcessor:
         self.ana_seq = self.ana_seq[list(indexes.values())] #bring ana_seq into order
         self.indexes = indexes
 
+
     def extract_nuclear_measurements(self):
         trace=list(self.df.trace)[0]
         other_matches=self.df.loc[self.df.trace==trace]
@@ -1208,13 +1672,21 @@ class DataProcessor:
 
     def extract_step_idx(self, code_content):
         """
-        Extract all occurrences of step_idx and their order of appearance.
+        Extract all occurrences of step_idx and their order of appearance,
+        ignoring duplicates (which can appear in skipped conditional code).
         """
         matches = re.finditer(r"step_idx\s*=\s*(\d+)", code_content)
+        seen = set()
         result = {}
-        for idx, match in enumerate(matches, start=1):
-            result[idx]= int(match.group(1)) #idx is the order of appearance, match.group(1) is the extracted step index
+        counter = 1
+        for match in matches:
+            val = int(match.group(1))
+            if val not in seen:
+                result[counter] = val
+                seen.add(val)
+                counter += 1
         return result if result else "step_idx not found."
+
 
 
     def perform_fit(self,fit_name, parameter_combination, fit_manager,fit_app):
@@ -1264,6 +1736,7 @@ class DataProcessor:
                 "parameters": {},
                 "result": {},
                 "best_fit": {},
+                "best_fit_long": {},
             }
 
         try:
@@ -1310,6 +1783,7 @@ class DataProcessor:
                 self.fit_results[fit_name]["parameters"][parameter_combination]={param: copy.deepcopy(data) for param, data in parameters.items()}
                 self.fit_results[fit_name]["result"][parameter_combination] = result
                 self.fit_results[fit_name]["best_fit"][parameter_combination] = fit_function(x_data,**result.best_values)
+                self.fit_results[fit_name]["best_fit_long"][parameter_combination] = fit_function(np.linspace(min(x_data),max(x_data),1000),**result.best_values)
 
             # update the fitted_params_df
             desired_values={self.parameter_map[i]:parameter_combination[i] for i in range(len(parameter_combination))}
@@ -1376,6 +1850,7 @@ class FitApp(QMainWindow):
         self.colorbars={}
         self.mouse_x,self.mouse_y=0,0
         self.show_uncertainity=True
+        self.fit_long=True
 
         # self.combi_idx_x=0 # the combi index for parameter giving the subplots x axis
         # self.combi_idx_y=0 # the combi index for parameter giving the subplots y axis
@@ -1389,7 +1864,7 @@ class FitApp(QMainWindow):
         self.label_ncols=2
         self.label_frontsize=10
 
-        self.setWindowTitle("Postprocess v1.0")
+        self.setWindowTitle("Postprocess v1.1")
         self.setGeometry(100, 100, 1200, 800)
 
         self.fit_manager = FitManager()
@@ -1484,7 +1959,7 @@ class FitApp(QMainWindow):
             self.model = NonLazyFileModel(root_path, self.progress_bar)
             self.tree_view.setModel(self.model)
 
-        self.tree_view.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree_view.setSelectionMode(QAbstractItemView.ExtendedSelection)#ExtendedSelection #SingleSelection
         self.tree_view.setHeaderHidden(False)
 
         # Connect selection change signal
@@ -1590,6 +2065,9 @@ class FitApp(QMainWindow):
 
             # Setup TreeView
             self.tree_view.setModel(self.model)
+            self.tree_view.setSelectionMode(QAbstractItemView.ExtendedSelection)#ExtendedSelection #SingleSelection
+            self.tree_view.setHeaderHidden(False)
+            self.tree_view.selectionModel().selectionChanged.connect(self.on_item_selected)
             self.root_path_button.setText(f"{directory}")
             fi = open("root_folder.txt", "w")
             fi.writelines([directory])
@@ -1599,6 +2077,15 @@ class FitApp(QMainWindow):
         """
         Filter the tree view based on the search term and expand matching items.
         """
+        # try:
+        #     file_path = os.path.join(text, "data")
+        #     if os.path.isfile(file_path):
+        #         print("File 'data' exists!")
+        #         return
+        # except:
+        #     pass
+
+
         search_str = text.strip().lower()
 
         def recursive_filter_and_expand(parent_item, parent_index):
@@ -2031,6 +2518,182 @@ class FitApp(QMainWindow):
                 print( "Error", f"An error occurred:\n{e}")
 
         return x,y,z
+    
+    def gen_rabi(self):
+        processor=self.data_processors[self.current_tab_name]["processor"]
+        selected_fit = next(
+            (name for name, data in self.fit_manager.fits.items() if data["display_name"] == self.fit_combobox.currentText()),
+            None
+        )
+        fit_name=self.fit_manager.fits[selected_fit]["display_name"]
+
+        if fit_name!="cosine" and fit_name!="sine":
+            print("Only cosine or sine fits are allowed (from the fit selection), you selected",fit_name) 
+            return
+        else:
+            add_phase=0
+            if fit_name=="sine":
+                add_phase=-np.pi/2
+            
+        Rabis={}
+        Phis={}
+        transitions=[]
+        amps=[]
+        nuc_state=[]
+
+        for i,combi in enumerate(self.fit_manager.fits[selected_fit]["parameters"].keys()):
+            params={key:str(value) for key,value in zip(processor.parameter_map,combi)}
+            fit_parameters=self.fit_manager.fits[selected_fit]["parameters"][combi]
+
+            key=params["trans"],params["amp"],params["init_nuc_state"]
+
+            transitions.append(params["trans"])
+            amps.append(params["amp"])
+            nuc_state.append(params["init_nuc_state"])
+
+            Rabis[key]=fit_parameters["b"]["fitted_value"]/(2*np.pi)
+            Phis[key]=fit_parameters["phi"]["fitted_value"]+add_phase
+
+        driving_type=params["driving"]
+        special_driving=["both","middle"]
+
+        transitions=list(set(transitions))
+        amps=list(set(amps))
+        nuc_state=list(set(nuc_state))
+
+        transitions.sort()
+        amps.sort()
+        nuc_state.sort()
+        
+        import datetime
+        temp_df = pa.DataFrame({
+            'amp0': [0],
+            'transition': 'none',
+            'omega': [0.0],
+            'phi':[0],
+            'date': [str(datetime.datetime.now())]
+        })
+        for trans_ in transitions:
+            for t_index in nuc_state:
+
+                temp_df = pa.concat([temp_df, pa.DataFrame({
+                        'amp0': [0],
+                        'transition': [trans_ + str(t_index)],
+                        'omega': [0],
+                        'phi':[Phis[(trans_,amps[0],t_index)]],
+                        'date': [str(datetime.datetime.now())]
+                    })])
+
+                for i,ampi in enumerate(amps):
+
+                    try:
+                        temp_df = pa.concat([temp_df, pa.DataFrame({
+                            'amp0': [ampi],
+                            'transition': [trans_ + str(t_index)],
+                            'omega': [Rabis[(trans_,ampi,t_index)]],
+                            'phi':[Phis[(trans_,ampi,t_index)]],
+                            'date': [str(datetime.datetime.now())]
+                        })])
+                    except Exception as e:
+                        print("an error occured:",e)
+
+        dfs={}
+        for plot_trans in transitions:
+            dfs[plot_trans]=[]
+            for t_index in nuc_state:
+                trans = plot_trans + str(t_index)
+
+                amp = temp_df.loc[temp_df['transition']==trans, 'amp0']#[:-1]
+                omega = temp_df.loc[temp_df['transition']==trans, 'omega']#[:-1]
+                phis=temp_df.loc[temp_df['transition']==trans, 'phi']
+
+                x=amp
+                y=omega
+                final_df = pa.DataFrame({
+                        'amp0': x,
+                        'transition': [0]*len(x),
+                        'omega': y,
+                        "phi":list(phis),
+                        'date': [str(datetime.datetime.now())]*len(x)
+                    })
+
+                final_df =pa.concat([pa.DataFrame({
+                        'amp0': [0],
+                        'transition': [trans[0]],
+                        'omega': [0],
+                        "phi":list(phis)[0],
+                        'date': [str(datetime.datetime.now())]
+                    }),final_df])
+
+                if driving_type not in special_driving:
+                    f = 'C:/src/qudi/log/transition_tracker_log/e_rabi_ou350deg-90-'+trans +'.dat'
+                    dst=f
+                    zeit=str(datetime.datetime.now()).replace(" ","").replace(":","_")[:-7]
+                    dst=dst.replace("/e_rabi_ou350deg-90-",f"/rabi_parameters_archive/{zeit}_e_rabi_ou350deg-90-")#.replace(".dat",f"_{zeit}.dat")
+                    shutil.copy(f,dst)
+                    column_order = ['amp0', 'transition', 'omega',"phi", 'date']
+                    final_df[column_order].to_csv(f, sep ='\t', index = False)
+                    print(final_df)
+
+                dfs[plot_trans].append(final_df)
+
+        def merge_and_average(df1, df2, on):
+            # normalize `on`
+            if isinstance(on, str):
+                on = [on]
+
+            # merge with suffixes
+            merged = pa.merge(
+                df1,
+                df2,
+                on=on,
+                suffixes=("_1", "_2")
+            )
+
+            # numeric columns to average (excluding merge keys)
+            num_cols = (
+                df1.select_dtypes(include="number")
+                .columns
+                .difference(on)
+            )
+
+            # average numeric columns
+            out = merged[on].copy()
+
+            for col in num_cols:
+                out[col] = merged[[f"{col}_1", f"{col}_2"]].mean(axis=1)
+
+            # keep non-numeric columns from df1
+            for col in df1.columns.difference(on).difference(num_cols):
+                out[col] = merged[f"{col}_1"]
+
+            return out
+        
+        if driving_type in special_driving:
+            for trans in dfs.keys():
+                datas=dfs[trans]
+                print(datas)
+                if len(datas)==2:
+                    merged=merge_and_average(*datas,on="amp0")
+                    merged=merged.drop(index=[1,2])
+                else:
+                    merged=datas[0]
+
+                print(merged)
+                f = 'C:/src/qudi/log/transition_tracker_log/e_rabi_ou350deg-90-'+trans +'.dat'
+                dst=f
+                zeit=str(datetime.datetime.now()).replace(" ","").replace(":","_")[:-7]
+                dst=dst.replace("/e_rabi_ou350deg-90-",f"/rabi_parameters_archive/{zeit}_e_rabi_ou350deg-90-")#.replace(".dat",f"_{zeit}.dat")
+                print("generating: ",dst, " from ", f)
+                shutil.copy(f,dst)
+                column_order = ['amp0', 'transition', 'omega',"phi", 'date']
+                merged[column_order].to_csv(f, sep ='\t', index = False)
+                print(merged)
+            
+        
+
+
+
 
     def export_data(self):
 
@@ -2254,8 +2917,47 @@ class FitApp(QMainWindow):
 
         content=self.history_manager.get_element_by_index(self.history_index)
 
-        code_input.setPlainText(content if content else "# You can apply code to x, y and z here before it is plotted or fitted\n#(In principle you have access to all app parameters here)\nx=x**2")
+        code_input.setPlainText(content if content else "# You can apply code to x, y and z here before it is plotted or fitted\n#(In principle you have access to all app parameters here)\ny=abs(y)\nself.label_ncols=100\nself.fit_long=True") 
             #"# You can apply code to x, y and z here before it is plotted or fitted\n#(In principle you have access to all app parameters here)\nx=x**2")
+            #b=processor.fit_results["cosine"]["parameters"][combination]["b"]["fitted_value"]
+            #print(self.data_processors["20251201-h15m50s43_Nuc_SSR_nuclear_SpinChain_n_targets_recursive"]["processor"].data.keys())
+        tmp="""target=np.pi
+
+
+print(combination)
+b=processor.fit_results["cosine"]["parameters"][combination]["b"]["fitted_value"]
+phi=processor.fit_results["cosine"]["parameters"][combination]["phi"]["fitted_value"]
+c=processor.fit_results["cosine"]["parameters"][combination]["c"]["fitted_value"]
+
+print(b/2/np.pi,phi)
+t=(target-phi)/b
+target=np.pi/2
+t2=(target-phi)/b
+
+def function1(t1,t2,ttot,start,end):
+
+	if ttot < start:
+	    t = t1
+	elif ttot > end:
+	    t = t2
+	else:
+	    # linear interpolation 	between t1 and t2
+	    alpha = (ttot - start) / (end - start)  # 0 at start, 1 at end
+	    t = t1 * (1 - alpha) + t2 * alpha
+	return t
+
+
+start = .100  # start of transition
+end = .150    # end of transition
+
+t3=function1(t/2,t2,t,start,end)
+axe = self.get_axes(combination,tab_name)[0]
+axe.vlines(t,0,1,color="magenta")
+axe.vlines(t/2,0,1,color="r")
+axe.vlines(t2,0,1,color="c")
+axe.vlines(t3,0,1,color="k")
+axe.hlines(c,0,1,color="g")
+print(t)"""    
         code_input.update()
 
         container_down_layout.addWidget(code_input)
@@ -2289,6 +2991,10 @@ class FitApp(QMainWindow):
         export_button = QPushButton("Export data")
         export_button.clicked.connect(self.export_data)
         container_down_layout.addWidget(export_button)
+
+        gen_rabi_button = QPushButton("Generate e-rabi file")
+        gen_rabi_button.clicked.connect(self.gen_rabi)
+        container_down_layout.addWidget(gen_rabi_button)
 
         Layout.addWidget(plot_controls)
         Layout.setStretchFactor(0, 9)
@@ -2532,6 +3238,7 @@ class FitApp(QMainWindow):
     def plot_data_single(self, tab_name, fit_name=None,combination=None,clear_plot=False):
         data = self.data_processors[tab_name]
         processor = data["processor"]
+        max_y_lims=(1000,-1000)
 
         if combination!=None:
             combinations=[combination]
@@ -2653,16 +3360,26 @@ class FitApp(QMainWindow):
 
                 ax.plot(x_data, y_data, ".-", label=label)
                 if fitted is not None:
-                    ax.plot(x_data, fitted, label=["Fit " + label], color="red")
+                    if  combination in processor.fit_results[fit_name]["best_fit_long"].keys() and self.fit_long:
+                        fitted=processor.fit_results[fit_name]["best_fit_long"][combination]
+                        x_data_long=np.linspace(min(x_data),max(x_data),1000)
+
+                    else:
+                        x_data_long=x_data.copy()
+
+                    
+                    ax.plot(x_data_long, fitted, label=["Fit " + label], color="red")
                     if self.show_uncertainity:
-                        uncertainty= processor.fit_results[fit_name]["result"][combination].eval_uncertainty(x=x_data)
-                        ax.fill_between(x_data, fitted - uncertainty, fitted + uncertainty,
+                        uncertainty= processor.fit_results[fit_name]["result"][combination].eval_uncertainty(x=x_data_long)
+                        ax.fill_between(x_data_long, fitted - uncertainty, fitted + uncertainty,
                                      color='gray', alpha=0.5, label='1-sigma uncertainty')
 
                 #ax.legend()
                 ax.set_title(" ".join([titlex,titley]))
                 ax.set_xlabel(processor.x_axis_param)
                 ax.set_ylabel(processor.y_axis_param)
+                max_y_lims=(min(max_y_lims[0],ax.get_ylim()[0]) , max(max_y_lims[1],ax.get_ylim()[1]))
+                
 
                 # Collect unique handles and labels from all subplots
                 handles_labels = [ax.get_legend_handles_labels() for ax in data["axes"].flat]
@@ -2683,7 +3400,14 @@ class FitApp(QMainWindow):
 
                 data["canvas"].draw()
 
-            processor.progress_bar.setValue(int((i+1) / len(combinations) * 100))
+                processor.progress_bar.setValue(int((i+1) / len(combinations) * 100))
+
+        for i,combination in enumerate(combinations):
+            if not processor.two_d:
+                ax = self.get_axes(combination,tab_name)[0]
+                ax.set_ylim(max_y_lims)
+
+           
 
 
     def perform_fit(self):
@@ -2729,37 +3453,15 @@ class FitApp(QMainWindow):
         processor = self.data_processors[current_tab_name]["processor"]
         processor.prepare_fit_dataframe(list(self.fit_manager.fits[selected_fit]["parameters_blueprint"].keys()))
 
+        self.refresh_axis_selectors()
+
         x_axis_list=self.x_axis_list_widgets[self.current_tab_name]
         y_axis_list=self.y_axis_list_widgets[self.current_tab_name]
         z_axis_list=self.z_axis_list_widgets[self.current_tab_name]
-
-        selected_item_y = y_axis_list.currentItem()
-        selected_text_y = selected_item_y.text() if selected_item_y else None
-        selected_item_z = z_axis_list.currentItem()
-        selected_text_z = selected_item_z.text() if selected_item_z else None
-        selected_item_x = x_axis_list.currentItem()
-        selected_text_x = selected_item_x.text() if selected_item_x else None
-
-        y_axis_list.clear()
-        x_axis_list.clear()
-        z_axis_list.clear()
-
-        y_axis_list.addItems(list(processor.measurement_observations.keys()))
-        y_axis_list.addItems(list(processor.measurement_parameters.keys()))
-        y_axis_list.addItems(list(self.fit_manager.fits[selected_fit]["parameters_blueprint"].keys()))
-
-        x_axis_list.addItems(list(processor.measurement_parameters.keys()))
+        
         x_axis_list.addItems(list(self.fit_manager.fits[selected_fit]["parameters_blueprint"].keys()))
-
-        z_axis_list.addItems(list(processor.measurement_observations.keys()))
+        y_axis_list.addItems(list(self.fit_manager.fits[selected_fit]["parameters_blueprint"].keys()))
         z_axis_list.addItems(list(self.fit_manager.fits[selected_fit]["parameters_blueprint"].keys()))
-
-        # Restore the selection if the item still exists
-        for selected_text,list_widget in zip([selected_text_x,selected_text_y,selected_text_z],[x_axis_list,y_axis_list,z_axis_list]):
-            if selected_text and selected_text in (list(processor.measurement_observations.keys())+list(processor.measurement_parameters.keys())+list(self.fit_manager.fits[selected_fit]["parameters_blueprint"].keys())):
-                matching_items = list_widget.findItems(selected_text, Qt.MatchExactly)
-                if matching_items:
-                    list_widget.setCurrentItem(matching_items[0])
 
         for combination in parameter_combinations:
 
@@ -3045,9 +3747,9 @@ class FitApp(QMainWindow):
             y_range=np.diff(axes.get_ylim())
 
             if abs(self.mouse_x-x)>0.01*x_range:
-                x= abs(self.mouse_x-x)
+                x= self.mouse_x-x
             if abs(self.mouse_y-y)>0.01*y_range:
-                x= abs(self.mouse_y-y)
+                x= self.mouse_y-y
 
             for row in range(1,self.parameter_table.rowCount()):
                 for k in range(int((self.parameter_table.columnCount()-1)/4)):
@@ -3060,18 +3762,59 @@ class FitApp(QMainWindow):
                         else:
                             self.parameter_table.setItem(row, k*4+1, QTableWidgetItem(str(x)))
 
+    def refresh_axis_selectors(self):
+        """
+        Refresh the x/y/z axis dropdowns for a given tab.
+        """
+        tab_name=self.current_tab_name
+        if tab_name not in self.data_processors:
+            print(f"No processor found for tab {tab_name}")
+            return
+
+        processor = self.data_processors[tab_name]["processor"]
+
+        x_axis_list=self.x_axis_list_widgets[self.current_tab_name]
+        y_axis_list=self.y_axis_list_widgets[self.current_tab_name]
+        z_axis_list=self.z_axis_list_widgets[self.current_tab_name]
+
+        selected_item_y = y_axis_list.currentItem()
+        selected_text_y = selected_item_y.text() if selected_item_y else None
+        selected_item_z = z_axis_list.currentItem()
+        selected_text_z = selected_item_z.text() if selected_item_z else None
+        selected_item_x = x_axis_list.currentItem()
+        selected_text_x = selected_item_x.text() if selected_item_x else None
+
+        y_axis_list.clear()
+        x_axis_list.clear()
+        z_axis_list.clear()
+
+        y_axis_list.addItems(list(processor.measurement_observations.keys()))
+        y_axis_list.addItems(list(processor.measurement_parameters.keys()))
+        x_axis_list.addItems(list(processor.measurement_parameters.keys()))
+        z_axis_list.addItems(list(processor.measurement_observations.keys()))
+
+        # Restore the selection if the item still exists
+        for selected_text,list_widget in zip([selected_text_x,selected_text_y,selected_text_z],[x_axis_list,y_axis_list,z_axis_list]):
+            if selected_text and selected_text in (list(processor.measurement_observations.keys())+list(processor.measurement_parameters.keys())):
+                matching_items = list_widget.findItems(selected_text, Qt.MatchExactly)
+                if matching_items:
+                    list_widget.setCurrentItem(matching_items[0])
+
+
     def open_measurements_viewer(self):
         """Open the measurements viewer window."""
-        if self.current_tab_name in self.setters.keys():
-            setter=self.setters[self.current_tab_name]
-        else:
-            processor=self.data_processors[self.current_tab_name]["processor"]
-            processor.make_trace_to_list()
-            setter = ParameterTableApp(    parameters = [processor.measurement_parameters[key] for key in processor.measurement_parameters.keys()],
-                                           processor=processor,
-                                           name=self.current_tab_name
-    )
-            self.setters[self.current_tab_name] =setter
+        #This was removed as we needed to recalculate avrg counts if we reload the data
+        # if self.current_tab_name in self.setters.keys():
+        #     setter=self.setters[self.current_tab_name]
+        # else:
+        processor=self.data_processors[self.current_tab_name]["processor"]
+        processor.make_trace_to_list()
+        self.refresh_axis_selectors() # to show the avereage counts per SSR
+        setter = ParameterTableApp(    parameters = [processor.measurement_parameters[key] for key in processor.measurement_parameters.keys()],
+                                        processor=processor,
+                                        name=self.current_tab_name
+)
+        self.setters[self.current_tab_name] =setter
 
         setter.show()
 
@@ -3192,6 +3935,7 @@ class ParameterTableApp(QMainWindow):
             for i in range(self.num_histograms):
                 analysis_info = self.processor.ana_seq[self.processor.indexes[i + 1]]
                 self.control_dict[combination][i]={
+                "treat_as_CB": analysis_info[0],
                 "slider": analysis_info[2],  # Default slider value
                 "combo_box": analysis_info[1],  # Default combo box value
                 "num1_input": analysis_info[4],  # Default spinbox value
@@ -3236,12 +3980,14 @@ class ParameterTableApp(QMainWindow):
                 combo_box_value = controls[6].currentText()
                 num1_value = controls[4].value()
                 num2_value = controls[5].value()
+                treat_as_CB_value= controls[10].currentText()
 
                 # Save values to the dictionary for the specific combination
                 if combination not in self.control_dict:
                     self.control_dict[combination] = {}  # Ensure combination exists in control_dict
 
                 self.control_dict[combination][idx] = {
+                    "treat_as_CB": treat_as_CB_value,
                     "slider": slider_value,
                     "combo_box": combo_box_value,
                     "num1_input": num1_value,
@@ -3262,6 +4008,7 @@ class ParameterTableApp(QMainWindow):
 
                 for hist_idx, controls in enumerate(self.histogram_controls):
                     if hist_idx in saved_values:
+                        controls[10].setValue(saved_values[hist_idx]["treat_as_CB"])
                         controls[3].setValue(saved_values[hist_idx]["slider"])
                         controls[6].setCurrentText(saved_values[hist_idx]["combo_box"])
                         controls[4].setValue(saved_values[hist_idx]["num1_input"])
@@ -3283,11 +4030,13 @@ class ParameterTableApp(QMainWindow):
                 for hist_idx, controls in self.control_dict[combination].items():
                     if hist_idx not in index_controls:
                         index_controls[hist_idx] = {
+                            "treat_as_CB":[],
                             "slider": [],
                             "combo_box": [],
                             "num1_input": [],
                             "num2_input": []
                         }
+                    index_controls[hist_idx]["treat_as_CB"].append(controls["treat_as_CB"])
                     index_controls[hist_idx]["slider"].append(controls["slider"])
                     index_controls[hist_idx]["combo_box"].append(controls["combo_box"])
                     index_controls[hist_idx]["num1_input"].append(controls["num1_input"])
@@ -3303,6 +4052,7 @@ class ParameterTableApp(QMainWindow):
         majority_by_index = {}
         for hist_idx, control_values in index_controls.items():
             majority_by_index[hist_idx] = {
+                "treat_as_CB": majority_vote(control_values["treat_as_CB"]),
                 "slider": majority_vote(control_values["slider"]),
                 "combo_box": majority_vote(control_values["combo_box"]),
                 "num1_input": majority_vote(control_values["num1_input"]),
@@ -3410,19 +4160,21 @@ class ParameterTableApp(QMainWindow):
             # Use majority rule to get initial values
             initial_values = self.get_majority_vote(selected_combinations)
 
-            widget, red_line, blue_line_1, blue_line_2, slider, num1_input, num2_input, combo_box, normal,positive,negative = self.create_histogram_plot(
+            widget, red_line, blue_line_1, blue_line_2, slider, num1_input, num2_input, combo_box, normal,positive,negative,treat_as_CB = self.create_histogram_plot(
                 trace_data, idx, self.update_callback
             )
             self.histogram_controls.append(
-                (red_line, blue_line_1, blue_line_2, slider, num1_input, num2_input, combo_box, normal,positive,negative))
+                (red_line, blue_line_1, blue_line_2, slider, num1_input, num2_input, combo_box, normal,positive,negative,treat_as_CB))
 
             analysis_info=self.processor.ana_seq[self.processor.indexes[idx+1]]
+            treatment=analysis_info[0]
             threshold=analysis_info[2]
             rule=analysis_info[1]
             exclusion_zone=analysis_info[4]
 
 
             # Apply initial values to controls
+            treat_as_CB.setCurrentText(initial_values.get(idx, {}).get("treat_as_CB", treatment))
             slider.setValue(initial_values.get(idx, {}).get("slider", threshold))
             combo_box.setCurrentText(initial_values.get(idx, {}).get("combo_box", rule))
             num1_input.setValue(initial_values.get(idx, {}).get("num1_input", exclusion_zone))
@@ -3499,17 +4251,23 @@ class ParameterTableApp(QMainWindow):
         # Slider and controls
         controls_layout = QHBoxLayout()
 
-        # Add combo box for conditions
-        combo_box = QComboBox()
-        combo_box.addItems([">", "<"])
-        combo_box.currentIndexChanged.connect(
-            lambda: update_callback(slider.value(), red_line, blue_line_1, blue_line_2, idx))
-
         # Slider
         slider = QSlider(Qt.Horizontal)
         slider.setRange(0, max(data))
         slider.setValue(int(np.mean(data)))
         slider.valueChanged.connect(lambda value: update_callback(value, red_line, blue_line_1, blue_line_2, idx))
+
+        # Add combo box for treat
+        treat_as_CB = QComboBox()
+        treat_as_CB.addItems(["init", "result"])
+        treat_as_CB.currentIndexChanged.connect(
+            lambda: update_callback(slider.value(), red_line, blue_line_1, blue_line_2, idx))
+
+        # Add combo box for conditions
+        combo_box = QComboBox()
+        combo_box.addItems([">", "<"])
+        combo_box.currentIndexChanged.connect(
+            lambda: update_callback(slider.value(), red_line, blue_line_1, blue_line_2, idx))
 
         # Exclusion zone controls
         exclusion_label = QLabel("EZ")
@@ -3521,6 +4279,7 @@ class ParameterTableApp(QMainWindow):
             lambda: update_callback(slider.value(), red_line, blue_line_1, blue_line_2, idx))
 
         # Add widgets to layout
+        controls_layout.addWidget(treat_as_CB)
         controls_layout.addWidget(QLabel("Rule: 1 if"))
         controls_layout.addWidget(combo_box)  # Add combo box
         controls_layout.addWidget(QLabel("Threshold"))
@@ -3534,7 +4293,7 @@ class ParameterTableApp(QMainWindow):
         layout.addWidget(plot_widget)
         layout.addLayout(controls_layout)
 
-        return widget, red_line, blue_line_1, blue_line_2, slider, num1_input, num2_input, combo_box,bar_item,bar_item_positive,bar_item_negative
+        return widget, red_line, blue_line_1, blue_line_2, slider, num1_input, num2_input, combo_box,bar_item,bar_item_positive,bar_item_negative ,treat_as_CB
 
     def update_callback(self, slider_value, red_line, blue_line_1, blue_line_2, idx):
         num1_input = self.histogram_controls[idx][4]
@@ -3570,7 +4329,7 @@ class ParameterTableApp(QMainWindow):
             return
 
         for i,controls in enumerate(self.histogram_controls):
-            if self.processor.ana_seq[i][0]=="init":
+            if controls[10].currentText()=="init":
 
                 slider_value = controls[3].value()
                 combo_box_value = controls[6].currentText()

@@ -44,15 +44,16 @@ marker_alias = {
                 'gate':      ['2g', 1, 'smpl', None],
                 'gateMW':    ['2g', 2, 'smpl', None],
                 'memory':    ['2g', 2, 'sync', None],
-                'FlipMirror':['ps', 1, 'FlipMirror', '0'],
+                #'FlipMirror':['ps', 1, 'FlipMirror', '0'],
+                'closeRF':   ['ps', 1, 'closeRF', '0'],
                 'A2':        ['ps', 1, 'A2', '1'],
                 'repump':    ['ps', 1, 'repump', '2'],
                 #'green':     ['ps', 1, 'green', '3'],
                 'laser':     ['ps', 1, 'laser', '3'], # opens second AOM
                 # PS CHANNEL 4 IS CLOCK
                 'A1':        ['ps', 1, 'A1', '5'],
-                'shutter':['ps', 1, 'shutter', '6'], # Currently unused
-                'gateRF':   ['ps', 1, 'gateRF', '7'],
+                'shutter':   ['ps', 1, 'shutter', '6'], # optical shutter
+                'gateRF':    ['ps', 1, 'gateRF', '7'],
                 }
 
 

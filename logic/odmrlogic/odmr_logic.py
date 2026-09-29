@@ -23,6 +23,9 @@ from collections import OrderedDict
 import matplotlib.pyplot as plt
 from core.statusvariable import StatusVar
 import hardware.Keysight_AWG_M8190.elements as E
+import notebooks.UserScripts.helpers.snippets_awg as sna
+import lmfit
+from PyQt5 import QtTest
 #import pandas as pd
 
 class ODMRLogic_holder(GenericLogic):
@@ -32,6 +35,8 @@ class ODMRLogic_holder(GenericLogic):
     mcas_holder = Connector(interface='McasDictHolderInterface')
     fitlogic = Connector(interface='FitLogic')
     #transition_tracker = Connector(interface="TransitionTracker")
+    PLE_logic= Connector("LaserScannerLogic")
+
     CHANNEL_APD0 = 0
     CHANNEL_APD1 = 1
     CHANNEL_DETECT = 2
@@ -72,6 +77,7 @@ class ODMRLogic_holder(GenericLogic):
         self._awg = self.mcas_holder()#mcas_dict()
         self._fit_logic = self.fitlogic()
         #self._transition_tracker=self.transition_tracker()
+        self._PLE_logic=self.PLE_logic()
         
         self.stop_awg = self._awg.mcas_dict.stop_awgs
         self.pulsedODMRLogic = pulsedODMRLogic(self)
@@ -638,6 +644,70 @@ class ODMRLogic_holder(GenericLogic):
   
 
 class ODMRLogic(cw_default):
+    
+    F=False
+    T=True
+    pulsed_Filename = StatusVar("pulsed_Filename", "filename")
+    pulsed_MW1 = StatusVar("pulsed_MW1", T)
+    pulsed_MW2 = StatusVar("pulsed_MW2", F)
+    pulsed_MW3 = StatusVar("pulsed_MW3", F)
+    pulsed_MW4 = StatusVar("pulsed_MW4", F)
+    pulsed_MW5 = StatusVar("pulsed_MW5", F)
+
+    pulsed_MW1_Power = StatusVar("pulsed_MW1_Power", -41)
+    pulsed_MW2_Power = StatusVar("pulsed_MW2_Power", -20)
+    pulsed_MW3_Power = StatusVar("pulsed_MW3_Power", -20)
+    pulsed_MW4_Power = StatusVar("pulsed_MW4_Power", -20)
+    pulsed_MW5_Power = StatusVar("pulsed_MW5_Power", -20)
+
+    pulsed_StartFreq = StatusVar("pulsed_StartFreq", 30)
+    pulsed_StopFreq = StatusVar("pulsed_StopFreq", 38)
+    pulsed_Stepsize = StatusVar("pulsed_Stepsize", 0.2)
+    pulsed_MW2_Freq = StatusVar("pulsed_MW2_Freq", 173)
+    pulsed_MW3_Freq = StatusVar("pulsed_MW3_Freq", 140)
+    pulsed_MW4_Freq = StatusVar("pulsed_MW4_Freq", 140)
+    pulsed_MW5_Freq = StatusVar("pulsed_MW5_Freq", 140)
+    pulsed_MW4_piPulseDuration = StatusVar("pulsed_MW4_piPulseDuration", 0)
+    pulsed_MW5_piPulseDuration = StatusVar("pulsed_MW5_piPulseDuration", 0)
+
+    pulsed_A1 = StatusVar("pulsed_A1", F)
+    pulsed_A2 = StatusVar("pulsed_A2", T)
+    pulsed_A1Readout = StatusVar("pulsed_A1Readout", F)
+    pulsed_A2Readout = StatusVar("pulsed_A2Readout", T)
+    pulsed_PulsedRepump = StatusVar("pulsed_PulsedRepump", T)
+    pulsed_RepumpDuration = StatusVar("pulsed_RepumpDuration", 5)
+    pulsed_RepumpDecay = StatusVar("pulsed_RepumpDecay", 3)
+    pulsed_CWRepump = StatusVar("pulsed_CWRepump", F)
+
+    pulsed_PiDecay = StatusVar("pulsed_PiDecay", 500)
+    pulsed_piPulseDuration = StatusVar("pulsed_piPulseDuration", 1088)
+
+    pulsed_Stoptime = StatusVar("pulsed_Stoptime", 0)
+    pulsed_PeriodicSaving = StatusVar("pulsed_PeriodicSaving", F)
+    pulsed_Interval = StatusVar("pulsed_Interval", 0)
+
+    pulsed_AOMDelay = StatusVar("pulsed_AOMDelay", 450)
+    pulsed_InitTime = StatusVar("pulsed_InitTime", 20)
+    pulsed_DecayInit = StatusVar("pulsed_DecayInit", 1)
+    pulsed_ReadoutTime = StatusVar("pulsed_ReadoutTime", 1.3)
+    pulsed_ReadoutDecay = StatusVar("pulsed_ReadoutDecay", 0.5)
+
+    pulsed_PerformFit = StatusVar("pulsed_PerformFit", F)
+
+    pulsed_SecondsPerPoint = StatusVar("pulsed_SecondsPerPoint", 0.02)
+
+    pulsed_Runtime = StatusVar("pulsed_Runtime", 0)
+    pulsed_Binning = StatusVar("pulsed_Binning", 10)
+
+    pulsed_odmr_cb_max = StatusVar("pulsed_odmr_cb_max", 100)
+    pulsed_odmr_cb_high_percentile = StatusVar("pulsed_odmr_cb_high_percentile", 100)
+    pulsed_odmr_cb_low_percentile = StatusVar("pulsed_odmr_cb_low_percentile", 0)
+    pulsed_odmr_cb_min = StatusVar("pulsed_odmr_cb_min", 0)
+
+    pulsed_NumberOfLines = StatusVar("pulsed_NumberOfLines", 20)
+    CallerTag = StatusVar("CallerTag", "")
+    pulsed_unit = StatusVar("pulsed_unit", False)
+
     def __init__(self,holder):
         self.now = time.time()
         self.measurement_running=False
@@ -839,12 +909,12 @@ class ODMRLogic(cw_default):
             #turn off tt_trigger to increment the histogram-index of TimeTagger
             #seq.start_new_segment("MW_readout"+str(frequencies))
             seq.start_new_segment("Next click"+str(frequencies),loop_count=1)
-            seq.asc(name="MW_readout"+str(frequencies)[:32],pd2g1 = {"type":"sine", "frequencies":frequencies, "amplitudes":self.power},
+            seq.asc(name="MW_readout"+str(frequencies)[:32],pd2g1 = {"type":"sinehermite", "frequencies":frequencies, "amplitudes":self.power},
                 gate = True,
                 length_mus=E.round_length_mus_to_x_multiple_ps(0.064)
                 ) 
             seq.start_new_segment("Start Click"+str(frequencies),loop_count=int(self.cw_SecondsPerPoint*1e6/50))
-            seq.asc(name="MW_readout"+str(frequencies)[:32],pd2g1 = {"type":"sine", "frequencies":frequencies, "amplitudes":self.power},
+            seq.asc(name="MW_readout"+str(frequencies)[:32],pd2g1 = {"type":"sinehermite", "frequencies":frequencies, "amplitudes":self.power},
                 A1=self.cw_A1,
                 A2=self.cw_A2,
                 laser = True,
@@ -870,7 +940,7 @@ class ODMRLogic(cw_default):
                 )  
 
         seq.start_new_segment("Waiting for Readout, rollover",loop_count=int(self.cw_SecondsPerPoint*1e6*(self.number_of_points_per_line/2)/50))
-        seq.asc(name="MW_readout"+str(frequencies)[:32],pd2g1 = {"type":"sine", "frequencies":frequencies, "amplitudes":self.power},
+        seq.asc(name="MW_readout"+str(frequencies)[:32],pd2g1 = {"type":"sinehermite", "frequencies":frequencies, "amplitudes":self.power},
             A1=self.cw_A1,
             A2=self.cw_A2,
             laser = True,
@@ -919,6 +989,47 @@ class pulsedODMRLogic(pulsed_default):
         self.x_fit = np.arange(20)
         self.y_fit = np.arange(20)
         self.starting_time=0
+        self.refocusing=False
+        self.do_refocus_ple=True
+
+
+        self.holder.CheckReady_Beacon = RepeatedTimer(60*6, self.refocus_ple)
+
+    def fit_transitions(self,data):
+        x=self.mw1_freq
+        g1 = lmfit.GaussianModel(prefix='g1_')
+        g2 = lmfit.GaussianModel(prefix='g2_')
+
+        model = g1 + g2
+
+        refocus_index=self.refocus_index
+
+        tt=self.queue.tt
+        f=[tt.mw_mixing_frequency_L,tt.mw_mixing_frequency_R][refocus_index] 
+
+
+        params = model.make_params()
+        # Peak 1 guesses
+        params['g1_amplitude'].set(value=max(data))
+        params['g1_center'].set(value=f-2.5)
+        params['g1_sigma'].set(value=1.0, min=0)
+
+        # Peak 2 guesses
+        params['g2_amplitude'].set(value=max(data))
+        params['g2_center'].set(value=f+2.5)
+        params['g2_sigma'].set(value=1.0, min=0)
+        result = model.fit(data, params, x=x)
+
+        center1 = result.params['g1_center'].value
+        center2 = result.params['g2_center'].value
+
+        if refocus_index==1:
+            tt.mw_mixing_frequency_R=(center1+center2)/2
+        else:
+            tt.mw_mixing_frequency_L=(center1+center2)/2
+
+
+
 
     def data_readout(self):
         self.current_runtime = time.time()-self.starting_time
@@ -926,6 +1037,11 @@ class pulsedODMRLogic(pulsed_default):
             self.holder.update_TT = True
             self.holder.sigOdmrPlotsUpdated.emit()
             self.pulsed_Stop_Button_Clicked(True)
+            self.fit_transitions(self.ancient_data)
+            if self.refocusing:
+                self.refocus(self.queue,index=1)
+            
+
         if not(self.measurement_running or self.syncing):
             return
 
@@ -1092,7 +1208,7 @@ class pulsedODMRLogic(pulsed_default):
                 
             if self.pulsed_CWRepump and (self.pulsed_MW2 or self.pulsed_MW3) and not (self.pulsed_A1 or self.pulsed_A2):
                 seq.asc(name='gateMW', length_mus=gateMW_dur, gateMW=True)
-                seq.asc(name="init_sine"+str(freq),pd2g1 = {"type":"sine", "frequencies":freq_init, "amplitudes":power_init},
+                seq.asc(name="init_sine"+str(freq),pd2g1 = {"type":"sinehermite", "frequencies":freq_init, "amplitudes":power_init},
                         gateMW = True,
                         repump = self.pulsed_CWRepump,
                         A1=self.pulsed_A1,
@@ -1114,7 +1230,7 @@ class pulsedODMRLogic(pulsed_default):
             
             elif (self.pulsed_A1 or self.pulsed_A2) and (self.pulsed_MW2 or self.pulsed_MW3):
                 seq.asc(name='gateMW', length_mus=E.round_length_mus_to_x_multiple_ps(gateMW_dur, self.round_to), gateMW=True)
-                seq.asc(name="init_sine"+str(freq),pd2g1 = {"type":"sine", "frequencies":freq_init, "amplitudes":power_init},
+                seq.asc(name="init_sine"+str(freq),pd2g1 = {"type":"sinehermite", "frequencies":freq_init, "amplitudes":power_init},
                         gateMW = True,
                         repump = self.pulsed_CWRepump,
                         A1=self.pulsed_A1,
@@ -1138,7 +1254,7 @@ class pulsedODMRLogic(pulsed_default):
             seq.asc(name='gateMW', length_mus=E.round_length_mus_to_x_multiple_ps(gateMW_dur,self.round_to), gateMW=True)
 
 
-            seq.asc(name="Pi_pulse"+str(freq),pd2g1 = {"type":"sine", "frequencies":[freq], "amplitudes":[Powers["MW1"]]},gateMW = True,
+            seq.asc(name="Pi_pulse"+str(freq),pd2g1 = {"type":"sinehermite", "frequencies":[freq], "amplitudes":[Powers["MW1"]]},gateMW = True,
                 length_mus = E.round_length_mus_to_x_multiple_ps(self.pulsed_piPulseDuration/1000, self.round_to), #self.pulsed_piPulseDuration is divided by 1000 to be in µs
                 )
             
@@ -1146,14 +1262,14 @@ class pulsedODMRLogic(pulsed_default):
                 freqs=np.asarray([self.pulsed_MW4_Freq,self.pulsed_MW5_Freq])[[self.pulsed_MW4 , self.pulsed_MW5]]
                 powers=np.array(_powers[3:])[[self.pulsed_MW4 , self.pulsed_MW5]]
 
-                seq.asc(name="flip",pd2g1 = {"type":"sine", "frequencies":freqs, "amplitudes":powers}, gateMW=True,
+                seq.asc(name="flip",pd2g1 = {"type":"sinehermite", "frequencies":freqs, "amplitudes":powers}, gateMW=True,
                         length_mus=E.round_length_mus_to_x_multiple_ps(min(self.pulsed_MW4_piPulseDuration,self.pulsed_MW5_piPulseDuration)/1000, self.round_to)
                         )
                 if self.pulsed_MW4_piPulseDuration!=self.pulsed_MW5_piPulseDuration:
                     freqs=np.asarray([self.pulsed_MW4_Freq,self.pulsed_MW5_Freq])[[self.pulsed_MW4 and self.pulsed_MW4_piPulseDuration>self.pulsed_MW5_piPulseDuration, self.pulsed_MW5 and self.pulsed_MW4_piPulseDuration<self.pulsed_MW5_piPulseDuration]]
                     powers=powers=np.array(_powers[3:])[[self.pulsed_MW4 and self.pulsed_MW4_piPulseDuration>self.pulsed_MW5_piPulseDuration, self.pulsed_MW5 and self.pulsed_MW4_piPulseDuration<self.pulsed_MW5_piPulseDuration]]
 
-                    seq.asc(name="flip",pd2g1 = {"type":"sine", "frequencies":freqs,"amplitudes":powers}, gateMW=True,
+                    seq.asc(name="flip",pd2g1 = {"type":"sinehermite", "frequencies":freqs,"amplitudes":powers}, gateMW=True,
                             length_mus=E.round_length_mus_to_x_multiple_ps(abs(self.pulsed_MW4_piPulseDuration-self.pulsed_MW5_piPulseDuration)/1000, self.round_to)
                             ) 
                     
@@ -1170,6 +1286,47 @@ class pulsedODMRLogic(pulsed_default):
         self.holder._awg.mcas_dict.print_info()
         self.holder._awg.mcas_dict['pulsedODMR'].run()
         print("running sequence pulsedODMR")
+
+    def refocus(self,queue,index): #index 0=L, index 1=R
+        tt=queue.tt
+        self.queue=queue
+        self.trans={}
+        for t in ['L', 'C', 'R']:
+            for i in [1, 2]:
+                self.trans[t + str(i)] = tt.mfl(td={tt.si29_list[0]: [-0.5, 0.5]}, ms_trans=t)[i - 1]
+
+        f=[tt.mw_mixing_frequency_L,tt.mw_mixing_frequency_R][index] 
+
+
+        si1_freq, si1_amp, si1_pi, si1_pi2 = sna.get_hardcoded_si1_values(state, tt.si_bath)
+        R_amp_read, L_amp_read, pi_dur_read, pi2_dur_read = sna.get_hardcoded_e_values_for_readout(trans_idx,weak=True)
+        amp, pi_dur, pi2_dur = sna.get_hardcoded_e_values_for_control(transition,fast=True)
+
+        self.pulsed_Stoptime=120
+        self.refocusing=True
+        self.refocus_index=index
+        self.setup_seq(pulsed_MW1_Power=amp,pulsed_StartFreq=f-7,pulsed_StopFreq=f+7,pulsed_Stepsize=0.2,pulsed_piPulseDuration=pi_dur)
+
+    def refocus_ple(self):
+        t=datetime.datetime.now()
+        current_time = int(t.hour)+int(t.minute)/60
+        if self.measurement_running and self.do_refocus_ple:
+            print("doing ple refocus")
+            self.pulsed_Stop_Button_Clicked(True)
+            if (current_time<2.5 or current_time>6):
+                self.holder._PLE_logic.start_scanning()
+                print("scanning")
+                while not self.holder._PLE_logic.happy:
+                    QtTest.QTest.qSleep(1000)
+                print("continue")
+                QtTest.QTest.qSleep(10000)
+                self.pulsed_Continue_Button_Clicked(True)
+        
+        
+
+
+
+
 
 
 

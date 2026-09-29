@@ -74,8 +74,8 @@ class NuclearOPs(DataGeneration):
         self.manual_pause=False
         self.hashed = False
         self.start_pause_time = 2.75 
-        self.end_pause_time = 5.25#6.1 
-        #self.end_pause_time = 6.1 
+        #self.end_pause_time = 5.25#6.1 
+        self.end_pause_time = 6.01 
         self.do_ple_refocusA2 = False
         self.do_ple_refocusA1 = False
         self.do_ple_refocus = False
@@ -394,6 +394,12 @@ class NuclearOPs(DataGeneration):
                         print("Current Time =", current_time)
                         print("Countrate too high. Assuming hearting of photon detector. Going to sleep for 1min.")
                         QtTest.QTest.qSleep(60000)
+
+                    while self.queue._counter.detector_off:
+                        if abort.is_set(): break
+                        print("counts = 0 -> waiting for counts (30s wait)")
+                        QtTest.QTest.qSleep(30000)
+
                     if 'applied_voltage' in self.current_iterator_df.keys():
                         self.set_bias_voltage(abort)
                     if self.set_A1_power or self.set_A2_power:
@@ -922,6 +928,9 @@ class NuclearOPs(DataGeneration):
 
 
     def do_refocus_zpl(self, abort):
+
+        QtTest.QTest.qSleep(1000) # wait 1s to avoid beeing too fast where ple refocus and confocal conflict in using the nidaq
+
         delta_t = time.time() - self.last_red_confocal_refocus
 
         if (delta_t >= self.confocal_refocus_interval):
@@ -930,22 +939,25 @@ class NuclearOPs(DataGeneration):
             if self.do_confocal_A1A2_refocus:
                 print("NuclearOPs: Turn on repump +a1+a2 for confocal refocus")
                 #self.queue._awg.mcas_dict['RepumpAndA1AndA2'].run()
-                seq = self.queue._awg.mcas(name='Confocal', ch_dict={"2g": [1, 2], "ps": [1]})
-                seq.start_new_segment("Conf")
-                seq.asc(name="lasers",
-                        A2=True,
-                        A1=True,
-                        laser=True,
-                        repump=True,
-                        length_mus=50
-                        )
+                # seq = self.queue._awg.mcas(name='Confocal', ch_dict={"2g": [1, 2], "ps": [1]})
+                # seq.start_new_segment("Conf")
+                # seq.asc(name="lasers",
+                #         A2=True,
+                #         A1=True,
+                #         laser=True,
+                #         repump=True,
+                #         length_mus=50
+                #         )
 
-                self.queue._awg.mcas_dict['Confocal'] = seq
+                # self.queue._awg.mcas_dict['Confocal'] = seq
 
-                while self.mcas=='':
-                    #process_events() #TODO gui process events.
-                    QtTest.QTest.qSleep(10)
-                self.queue._awg.mcas_dict['Confocal'].run()
+                # while self.mcas=='':
+                #     #process_events() #TODO gui process events.
+                #     QtTest.QTest.qSleep(10)
+                # self.queue._awg.mcas_dict['Confocal'].run()
+
+                self.queue._awg.mcas_dict.awgs["ps"].constant(pulse=(0, ['A2','A1',"repump","laser"], self.queue._awg.mcas_dict.awgs["ps"].analog_volt, 0))
+                                                        
         
             elif self.do_confocal_A2MW_refocus:
                 sequence_name="A2MW_confocal_refocus"
@@ -1011,6 +1023,7 @@ class NuclearOPs(DataGeneration):
             self.df_refocus_pos = pd.DataFrame(OrderedDict(confocal_x=[self.queue._optimizer.optim_pos_x], confocal_y=[self.queue._optimizer.optim_pos_y], confocal_z=[self.queue._optimizer.optim_pos_z]))
 
             self.performedRefocus = True
+            self.queue._awg.mcas_dict.stop_awgs()
 
     def check_eom(self):
 
@@ -1065,38 +1078,53 @@ class NuclearOPs(DataGeneration):
     #     #     interferometer.do_calibration_scan()
     #     #     while interferometer.syncFlag == False:
     #     #         time.sleep(0.1)
+    # def do_refocusodmr(self, abort=None, check_odmr_frequency_drift_ok=True, initial_odmr=False):
+    #     if abort.is_set():
+    #         logging.getLogger().info('do_refocusodmr stopped here0')
+    #     self.queue._odmr_ref.file_name = self.file_name #todo need to add the odmr-refocus file to the queue.
+    #     delta_t = time.time() - self.last_odmr
+    #     if self.odmr_interval != 0 and (delta_t >= self.odmr_interval) or len(self.data.df) == 0 or initial_odmr:
+    #         if check_odmr_frequency_drift_ok and hasattr(self, 'maximum_odmr_drift'):
+    #             self.add_odmr_script_to_queue(abort, self.odmr_pd)
+    #             current_drift = np.abs(self.queue.tt.current_local_oscillator_freq - self.data.df.iloc[-1, :].local_oscillator_freq)
+    #             if current_drift > self.maximum_odmr_drift:
+    #                 logging.getLogger().info("Too much drift ({} > {}), trying again!".format(current_drift, self.maximum_odmr_drift))
+    #                 odmr_frequency_drift_ok = False
+    #             else:
+    #                 logging.getLogger().info("Drift is ok  ({} < {})".format(current_drift, self.maximum_odmr_drift))
+    #                 odmr_frequency_drift_ok = True
+    #             if self.refocus_interval != 0 and self.odmr_count % self.refocus_interval == 0:
+    #                 self.add_odmr_script_to_queue(abort, self.odmr_pd_refocus)
+    #         else:
+    #             if self.refocus_interval != 0 and self.odmr_count % self.refocus_interval == 0:
+    #                 self.add_odmr_script_to_queue(abort, self.odmr_pd_refocus)
+    #             else:
+    #                 self.add_odmr_script_to_queue(abort, self.odmr_pd)
+    #             odmr_frequency_drift_ok = True
+    #         self.odmr_count += 1
+    #         self.last_odmr = time.time()
+    #         if abort.is_set():
+    #             logging.getLogger().info('do_refocusodmr stopped here1')
+    #         return odmr_frequency_drift_ok
+    #     elif check_odmr_frequency_drift_ok:
+    #         if abort.is_set():
+    #             logging.getLogger().info('do_refocusodmr stopped here2')
+    #         return True
+        
     def do_refocusodmr(self, abort=None, check_odmr_frequency_drift_ok=True, initial_odmr=False):
-        if abort.is_set():
-            logging.getLogger().info('do_refocusodmr stopped here0')
-        self.queue._odmr_ref.file_name = self.file_name #todo need to add the odmr-refocus file to the queue.
-        delta_t = time.time() - self.last_odmr
-        if self.odmr_interval != 0 and (delta_t >= self.odmr_interval) or len(self.data.df) == 0 or initial_odmr:
-            if check_odmr_frequency_drift_ok and hasattr(self, 'maximum_odmr_drift'):
-                self.add_odmr_script_to_queue(abort, self.odmr_pd)
-                current_drift = np.abs(self.queue.tt.current_local_oscillator_freq - self.data.df.iloc[-1, :].local_oscillator_freq)
-                if current_drift > self.maximum_odmr_drift:
-                    logging.getLogger().info("Too much drift ({} > {}), trying again!".format(current_drift, self.maximum_odmr_drift))
-                    odmr_frequency_drift_ok = False
-                else:
-                    logging.getLogger().info("Drift is ok  ({} < {})".format(current_drift, self.maximum_odmr_drift))
-                    odmr_frequency_drift_ok = True
-                if self.refocus_interval != 0 and self.odmr_count % self.refocus_interval == 0:
-                    self.add_odmr_script_to_queue(abort, self.odmr_pd_refocus)
-            else:
-                if self.refocus_interval != 0 and self.odmr_count % self.refocus_interval == 0:
-                    self.add_odmr_script_to_queue(abort, self.odmr_pd_refocus)
-                else:
-                    self.add_odmr_script_to_queue(abort, self.odmr_pd)
-                odmr_frequency_drift_ok = True
-            self.odmr_count += 1
-            self.last_odmr = time.time()
-            if abort.is_set():
-                logging.getLogger().info('do_refocusodmr stopped here1')
-            return odmr_frequency_drift_ok
-        elif check_odmr_frequency_drift_ok:
-            if abort.is_set():
-                logging.getLogger().info('do_refocusodmr stopped here2')
-            return True
+        delta_t = time.time() - self.last_odmr_refocus
+        if (delta_t >= self.odmr_refocus_interval):
+            with self.queue._threadlock:
+                print("doing_refocus_odmr")
+                #self.queue._awg.mcas_dict.awgs["ps"].constant(pulse=(0,["repump"],0,0))
+                self.queue.odmr_logic.pulsedODMRLogic.refocus(self.queue,level=0)
+
+                while not self.queue.ODMR_logic.refocus_finished:
+                    QtTest.QTest.qSleep(250)
+
+        self.last_odmr_refocus= time.time()
+
+
 
     def run_refocus(self):
         pass
@@ -1112,6 +1140,7 @@ class NuclearOPs(DataGeneration):
         #     logging.getLogger().info("Refocus ma_deviation [nm]: {}, {}, {}".format(*[(getattr(self.queue.confocal, axis) - self.df_refocus_pos.iloc[-1, :]['confocal_{}'.format(axis)])*1000 for axis in ['x', 'y', 'z']]))
 
     def add_odmr_script_to_queue(self, abort, pd):
+        print("nuclear ops 123")
         sys.modules[self.queue.init_task(name='refocus_confocal_odmr', folder='C:/src/qudi/notebooks')].run_fun(
             self, abort=abort, **pd)
 
@@ -1337,7 +1366,7 @@ class NuclearOPs(DataGeneration):
             df = ana_trace.analyze().df ## TRY this for init? This was the code before.
 
 
-            if (df.events == 0).any() and not self.analyze_type == 'consecutive' and df.at[0, 'events'] != 0:
+            if (df.events == 0).all() and not self.analyze_type == 'consecutive' and df.at[0, 'events'] != 0:
                 return True #Means that runn was not succesfull, 0 events, ==> repeat measurements.
             if 'result_num' in df.columns: #if there are multiple readouts of type "result", here step index is important
                 #Why we are going here, because we have only 1 readout anyway, 
@@ -1407,6 +1436,9 @@ class NuclearOPs(DataGeneration):
                 for page in seq_message:
                     fp.write(page)
                     fp.write('\n-------------------------------------------------------------------\n')
+
+            print("call from queue")
+            self.queue.tt.register.save_to_hdf(os.path.join(self.save_dir,"register.hdf"))
 
     def reset_settings(self):
         """

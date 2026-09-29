@@ -982,7 +982,7 @@ class ConfocalGui(GUIBase):
         Also, if the refocus was initiated here in confocalgui then we need to handle the
         "returned" optimal position.
         """
-        if caller_tag in ['confocalgui', 'NuclearOps']:
+        if caller_tag in ['confocalgui', 'NuclearOps',"DD"]:
             self._scanning_logic.set_position(
                 'optimizer',
                 x=optimal_pos[0],
@@ -990,7 +990,7 @@ class ConfocalGui(GUIBase):
                 z=optimal_pos[2],
                 a=0.0
             )
-        if caller_tag.startswith('NuclearOps_'): #Is this needed?
+        if caller_tag.startswith('NuclearOps_'): #Is this needed? yes
             self._scanning_logic.set_position(
                 'optimizer',
                 x=optimal_pos[0],

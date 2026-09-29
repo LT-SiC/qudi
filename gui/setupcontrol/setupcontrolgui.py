@@ -108,6 +108,7 @@ class SetupControlGUI(GUIBase):
         self._mw.StartAutoMeas_Button.clicked.connect(self._setupcontrol_logic.StartAutoMeas_Button_Clicked)
         self._mw.StopAutoMeas_Button.clicked.connect(self._setupcontrol_logic.StopAutoMeas_Button_Clicked)
         self._mw.SavePOIs_Button.clicked.connect(self._setupcontrol_logic.SavePOIs_Button_Clicked)
+        self._mw.DoNotPressButton.clicked.connect(self._setupcontrol_logic.DoNotPressButton_clicked)
         #self._setupcontrol_logic.SigReadPower.connect(self.update_laserpower, QtCore.Qt.QueuedConnection)
         
         self._mw.MW1_power_DoubleSpinBox.setValue(self._setupcontrol_logic.MW1_power)
@@ -143,6 +144,7 @@ class SetupControlGUI(GUIBase):
         self._mw.MW3_freq_DoubleSpinBox.valueChanged.disconnect()
         self._mw.Set_Power_DoubleSpinBox.valueChanged.disconnect()
         self._mw.repump_power_doubleSpinBox.valueChanged.disconnect()
+        self._mw.DoNotPressButton.clicked.disconnect()
 
         self._mw.Set_Power_Button.clicked.disconnect()
         self._mw.Read_Power_Button.clicked.disconnect()

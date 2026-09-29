@@ -307,9 +307,12 @@ class PlotData(qudip_enhanced.qtgui.gui_helpers.WithQt):
         self.subtract_parameter_list = SubtractParameterComboBox(parent=self)
         self.parameter_table = ParameterTable(parent=self)
         self.fit_result_table = FitResultTable(parent=self)
+        print("PlotData:1")
         self.set_data(**kwargs)
         if title is not None:
             self.update_window_title(title)
+
+        print("Created_plotdata")
 
     fit_function = 'cosine'
     show_legend = False
@@ -850,6 +853,7 @@ class FitResultTableQt(TableQt):
 
 class PlotDataQt(qudip_enhanced.qtgui.gui_helpers.QtGuiClass):
     def __init__(self, parent=None, no_qt=None):
+        print("create_plotdataqt")
         self.observation_list = SelectableListQt(name='observation_list', widget_name='observation_widget', parent=self)
         self.average_parameter_list = SelectableListQt(name='average_parameter_list', widget_name='average_parameter_widget', parent=self)
         self.x_axis_parameter_list = ParameterCombobox(name='x_axis_parameter_list', widget_name='x_axis_parameter_comboBox', parent=self)
@@ -862,6 +866,7 @@ class PlotDataQt(qudip_enhanced.qtgui.gui_helpers.QtGuiClass):
         super(PlotDataQt, self).__init__(parent=parent, no_qt=no_qt, ui_filepath=os.path.join(os.path.dirname(__file__), 'qtgui/plot_data_vv3.ui'))
         self.setCentralWidget(self.parameter_tab)
         #print(self.layout())
+        print("created_plotdataqt")
 
 
     update_info_text_signal = pyqtSignal(str)
@@ -970,6 +975,7 @@ class PlotDataQt(qudip_enhanced.qtgui.gui_helpers.QtGuiClass):
         self.col_ax_parameter_comboBox.currentIndexChanged.connect(self.col_ax_parameter_list.update_selected_indices_from_gui)
         self.row_ax_parameter_comboBox.currentIndexChanged.connect(self.row_ax_parameter_list.update_selected_indices_from_gui)
         self.subtract_parameter_comboBox.currentIndexChanged.connect(self.subtract_parameter_list.update_selected_indices_from_gui)
+        print("create_plotdataqt_init_gui")
 
     @printexception
     def open_measurement_code(self, *args, **kwargs):

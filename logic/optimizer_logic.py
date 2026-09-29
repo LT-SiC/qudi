@@ -102,7 +102,7 @@ class OptimizerLogic(GenericLogic):
         self.optim_sigma_y = 0.
         self.optim_sigma_z = 0.
 
-        self._max_offset = 3.
+        self._max_offset = ((self.x_range[1] - self.x_range[0]) / 2 +(self.y_range[1] - self.y_range[0]) / 2) /2
 
         # Sets the current position to the center of the maximal scanning range
         self._current_x = (self.x_range[0] + self.x_range[1]) / 2

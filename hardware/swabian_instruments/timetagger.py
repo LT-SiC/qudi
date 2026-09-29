@@ -30,8 +30,8 @@ class TT(Base, TimeTaggerInterface):
         #self.tagger.setTriggerLevel(1,0.7)
         #self.tagger.setTriggerLevel(2,0.7)
         #print("Hello, im using the wrong hardware file.")
-        self.tagger.setTriggerLevel(1,0.05)
-        self.tagger.setTriggerLevel(2,0.05)
+        self.tagger.setTriggerLevel(1,0.08)
+        self.tagger.setTriggerLevel(2,0.08)
         self.tagger.setDeadtime(1,70000) #70000, to avoid a trigger on the desceding side of the click signal from de SNSPD
 
     def on_deactivate(self):
@@ -142,8 +142,8 @@ class TT(Base, TimeTaggerInterface):
         refresh_rate - number of samples per second:
 
         """
-        self.tagger.setTriggerLevel(1,0.05)
-        self.tagger.setTriggerLevel(2,0.05)
+        #self.tagger.setTriggerLevel(1,0.08)
+        #self.tagger.setTriggerLevel(2,0.08)
         for key, value in kwargs.items():
             if key in self._counter.keys():
                 self._counter.update({key:value})

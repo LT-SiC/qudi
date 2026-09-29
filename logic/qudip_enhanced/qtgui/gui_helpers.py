@@ -11,6 +11,13 @@ import PyQt5.QtCore
 import PyQt5.uic
 import PyQt5.uic
 
+from PyQt5.QtWidgets import QApplication
+
+# # Check if an application already exists
+# app = QApplication.instance()
+# if app is None:
+#     app = QApplication(sys.argv)
+
 def compile_ui_file(ui_filepath):
     name = os.path.basename(ui_filepath).split('.')[0] + '.py'
     py_filepath = os.path.join(os.path.dirname(ui_filepath), name)

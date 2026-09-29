@@ -186,7 +186,7 @@ Threshold</string>
             <set>Qt::RightDockWidgetArea</set>
            </property>
            <property name="windowTitle">
-            <string>SSR3</string>
+            <string>CRC</string>
            </property>
            <widget class="QWidget" name="dockWidgetContents_9">
             <layout class="QGridLayout" name="gridLayout_17">
@@ -250,7 +250,7 @@ Threshold</string>
             <set>Qt::RightDockWidgetArea</set>
            </property>
            <property name="windowTitle">
-            <string>CRC</string>
+            <string>SSR3</string>
            </property>
            <widget class="QWidget" name="dockWidgetContents_8">
             <layout class="QGridLayout" name="gridLayout_14">

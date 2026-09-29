@@ -1,259 +1,408 @@
-from __future__ import print_function, absolute_import, division
+#!/usr/bin/env python3
+"""
+QueueLogic GUI (Hybrid Version) — cleaned and fixed
+- QueueManager uses a QObject "signals" proxy so it does not need to inherit QObject
+  (avoids metaclass/MRO conflicts)
+- ScriptThread runs embedded classes safely and reports via signals
+- MainWindow is a wrapper around a real QMainWindow (no direct inheritance)
+- Safe table rebuild (reorder) and stable signal/slot wiring
+"""
+from __future__ import print_function
 
-__metaclass__ = type
+# ---- Standard library imports ----
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from datetime import datetime          # keep class import
+from typing import Optional, List
 
-import sys, os
-import logic.misc
-
-from PyQt5.QtWidgets import QAbstractItemView, QMainWindow, QFileDialog
-from PyQt5 import QtGui
-from PyQt5.QtCore import pyqtSignal
-import PyQt5.uic
-import PyQt5.QtWidgets
-from logic.qudip_enhanced import *
-import importlib
-setup = False
-#import multi_channel_awg_seq as MCAS; importlib.reload(MCAS)
-import sip
-
-try:
-    sip.setapi('QDate', 2)
-    sip.setapi('QDateTime', 2)
-    sip.setapi('QString', 2)
-    sip.setapi('QtextStream', 2)
-    sip.setapi('Qtime', 2)
-    sip.setapi('QUrl', 2)
-    sip.setapi('QVariant', 2)
-except ValueError as e:
-    raise RuntimeError('Could not set API version (%s): did you import PyQt4 directly?' % e)
-
-import datetime
-import logging
-import logging.handlers
-import os
-import pickle
-import shutil
 import sys
+import os
+import shutil
+import pickle
 import threading
 import time
-from core.connector import Connector
-from gui.guibase import GUIBase
 import traceback
-#import TimeTaggerHandler
-import numpy as np
-import psutil
 import collections
-from PyQt5 import QtCore, QtWidgets
+import importlib
+import logging
+import logging.handlers
+import datetime as dt                  # module version, avoids shadowing
+from queue import Queue
 
-class ScriptQueueStep:
-    def __init__(self, name, pd):
-        self.name = name
-        self.pd = pd
+# ---- Third-party imports ----
+import numpy as np
+import multiprocess
 
+from qtpy import QtCore, QtWidgets, QtGui
 
-class ScriptQueueList(collections.MutableSequence):
-    def __init__(self, oktypes, list_owner, *args):
-        self.oktypes = oktypes
-        self.list_owner = list_owner
-        self._list = list()
-        self.extend(list(args))
+from PyQt5 import QtCore as QtCore_PyQt
+from PyQt5 import QtGui as QtGui_PyQt
+from PyQt5 import QtWidgets as QtWidgets_PyQt
+from PyQt5.QtCore import pyqtSignal, QTimer
+import PyQt5.uic
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QMainWindow,
+    QFileDialog,
+    QMessageBox,
+)
 
-    @property
-    def list(self):
-        return self._list
+try:
+    import qdarktheme
+except Exception:
+    qdarktheme = None
 
-    @list.setter
-    def list(self, val):
-        """
-        inefficient, calls script_queue_changed multiple times. In practice not relevant.
-        """
-        self._list = []
-        if len(val) == 0:
-            self.list_owner.script_queue_changed()
-        else:
-            try:
-                for i in val:
-                    self.append(i)
-            except Exception:
-                self._list = []
-                self.list_owner.script_queue_changed()
-                exc_type, exc_value, exc_tb = sys.exc_info()
-                traceback.print_exception(exc_type, exc_value, exc_tb)
+try:
+    import psutil
+except Exception:
+    psutil = None
 
-    def check(self, val):
-        if not isinstance(val, self.oktypes):
-            raise TypeError("list item {} is not allowed, as it can not be found in {}".format(val, self.oktypes))
+import sip
 
-    # def check_duplicate(self, v):
-    #     duplicates = [item.name for item in self.list if item.name == v.name]
-    #     if len(duplicates) > 0:
-    #         raise Exception('Error: {}, {}, {}'.format(duplicates, self.list, v))
+# ---- QUDI imports ----
+import logic.misc
+import logic.misc as misc
+from logic.generic_logic import GenericLogic
+from core.connector import Connector
+from core.util.mutex import Mutex
 
-    def set_parent(self, v):
-        v.parent = self.list_owner
+import logic.ODMR_nops as odmr
+importlib.reload(odmr)
 
-    def __len__(self):
-        return len(self.list)
-
-    def __getitem__(self, i):
-        return self.list[i]
-
-    def __delitem__(self, i):
-        del self.list[i]
-        self.list_owner.script_queue_changed()
-
-    def __setitem__(self, i, v):
-        raise NotImplementedError
-        # self.check(v)
-        # self.check_duplicate(v)
-        # self.list[i] = v
-        # self.list_owner.script_queue_changed(i, v)
-
-    def insert(self, i, v):
-        if i != len(self.list):
-            raise Exception('Only appending and popping items allowed')
-        self.check(v)
-        # self.check_duplicate(v)
-        self.list.insert(i, v)
-        self.list_owner.script_queue_changed()
-
-    def __str__(self):
-        return str(self.list)
-
-    def __repr__(self):
-        return str(self.list)
-
-class window(QtWidgets.QMainWindow):
-    """ Create the Main Window based on the *.ui file. """
-
-    def __init__(self):
-        # Get the path to the *.ui file
-        super().__init__()
-        # Load it
-        this_dir = os.path.dirname(__file__)
-        ui_file = os.path.join(this_dir,'pi3d_main_window.ui')
-        # Load ui
-        PyQt5.uic.loadUi(ui_file, self)
-        self.show()
+from gui.guibase import GUIBase
+from logic.qudip_enhanced import *   # legacy QUDI API requires star import
+from core.statusvariable import StatusVar
 
 
+QUEUE_DIR = Path.cwd() / "queue"
+QUEUE_DIR.mkdir(exist_ok=True)
+#CURRENT_RUNNING_NAME = "queuelogic.cun"
+
+
+class Status(Enum):
+    QUEUED = "Queued"
+    RUNNING = "Running"
+    PAUSED = "Paused"
+    COMPLETED = "Completed"
+    ERROR = "Error"
+    ABORTED = "Aborted"
+
+
+@dataclass
+class ScriptTask:
+    id: str
+    original_path: Path
+    queued_path: Path
+    status: Status = Status.QUEUED
+    process: Optional[QtCore.QProcess] = None
+    thread: Optional[QtCore.QThread] = None
+    worker: Optional[object] = None
+    pid: Optional[int] = None
+    stdout: str = ""
+    stderr: str = ""
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    accumulated_time: float = 0.0
+    pause_start: Optional[datetime] = None
+    is_embedded: bool = False
+
+
+# ---------------------------
+# MainWindow wrapper (no direct inheritance)
+# ---------------------------
 class queue_gui(GUIBase):
-
-    update_user_script_folder_text_field_signal = pyqtSignal(str)
-    update_selected_user_script_combo_box_signal = pyqtSignal(collections.OrderedDict)
-    update_script_queue_table_data_signal = pyqtSignal(collections.OrderedDict)
-    update_user_script_params_text_field_signal = pyqtSignal(collections.OrderedDict)
-
-    #Connect to the Queue.
+    """
+    Wrapper around QMainWindow so the class itself does not directly inherit from QMainWindow.
+    Exposes show(), resize(), setWindowTitle(), raise_(), and makes widget attributes
+    available as attributes on this wrapper.
+    """
+    # Connect to the Queue.
     queue_logic = Connector(interface="queue_logic")  # class name
 
-    def __init__(self, config, title=None, parent=None, no_qt=None, gui=True, **kwargs):
-        super(queue_gui, self).__init__(config = config, **kwargs)
+    scripts_folder=StatusVar('scripts_folder', r"C:\src\qudi\notebooks\UserScripts")#r"C:\src\qudi\notebooks\UserScripts"
+    # def __init__(self):
+    #     # real internal QMainWindow
+    #     self._win = QtWidgets.QMainWindow()
+    #     #self._init_ui()
+    #     #self._queue_logic = QueueManager()
 
-    def init_gui(self):
-        self._mw.setWindowTitle('nuclear ops queue')
-        # icon = QtGui.QIcon()
-        # icon.addPixmap(QtGui.QPixmap(r"D:\Python\pi3diamond\qtgui\folder_icon.png"), QtGui.QIcon.Normal, QtGui.QIcon.On)
-        # self.user_script_folder_pushButton.setIcon(icon)
-
-        for name in [
-            'update_user_script_folder_text_field',
-            'update_selected_user_script_combo_box',
-            'update_script_queue_table_data',
-        ]:
-            getattr(getattr(self, "{}_signal".format(name)), 'connect')(
-                getattr(self, "{}_signal_emitted".format(name)))
-        self._mw.selected_user_script_combo_box.currentIndexChanged.connect(
-            self.update_selected_user_script_from_combo_box)
-        self._mw.remove_next_script_button.clicked.connect(self._queue_logic.remove_last_script)
-        self._mw.set_stop_request_button.clicked.connect(self._queue_logic.set_stop_request)
-        self._mw.add_to_queue_button.clicked.connect(self.add_to_queue)
-        self._mw.add_rco_button.clicked.connect(self._queue_logic.add_rco)
-        self._mw.evaluate_button.clicked.connect(self._queue_logic.evaluate)
-        self._mw.write_standard_awg_sequences_button.clicked.connect(self._queue_logic.write_standard_awg_sequences)
-        #self._mw.user_script_folder_text_field.textChanged.connect(self.user_script_folder_text_field_text_changed)
-        self._mw.user_script_folder_pushButton.clicked.connect(self.open_user_script_folder_file_dialog)
-        #self.show()
-        self._queue_logic.update_selected_user_script_combo_box_signal.connect(self.update_selected_user_script_combo_box)
-        self._queue_logic.update_queue_list.connect(self.update_script_queue_table_data)
+    #     # set a fixed window title / size like before
+    #     self._win.setWindowTitle("QueueLogic")
+    #     self._win.resize(1100, 650)
 
     def on_activate(self):
-        self._mw = window()
+        self._win = QtWidgets.QMainWindow()
+        self._win.setWindowTitle("QueueLogic")
+        self._win.resize(1100, 650)
+        self._mw = self._win
         self._queue_logic = self.queue_logic()
-        self.init_gui()
-
-    def show(self):
-        """ Make window visible and put it above all other windows.
-        """
-        QtWidgets.QMainWindow.show(self._mw)
-        self._mw.activateWindow()
-        self._mw.raise_()
-
+        self._init_ui()
+        self._connect_signals()
+        #self.apply_theme()
+        self.show()
 
     def on_deactivate(self):
         self._mw.close()
 
+    def manuel_pause(self,value):
+        print("Manuel pause:",value)
+        if hasattr(self._queue_logic,"cun"):
+            self._queue_logic.cun.manual_pause=value
 
-    def add_to_queue(self, stupid_argument_emitted_by_qt_signal):
-        self._queue_logic.add_to_queue()
+    # --- convenience API that mirrors the real QMainWindow ---
+    def show(self):
+        return self._win.show()
+
+    def resize(self, w, h):
+        return self._win.resize(w, h)
+
+    def setWindowTitle(self, title):
+        return self._win.setWindowTitle(title)
+
+    def raise_(self):
+        try:
+            return self._win.raise_()
+        except Exception:
+            return None
+
+    def _init_ui(self):
+        # Build the UI elements and attach central widget to the internal QMainWindow
+        central = QtWidgets.QWidget()
+        self._win.setCentralWidget(central)
+        v = QtWidgets.QVBoxLayout(central)
+
+        # --- Row 1: folder selector ---
+        row1 = QtWidgets.QHBoxLayout()
+        self.folder_line = QtWidgets.QLineEdit()
+        self.folder_btn = QtWidgets.QPushButton("Select Folder")
+        self.refresh_btn = QtWidgets.QPushButton("Refresh .py list")
+        row1.addWidget(self.folder_line)
+        row1.addWidget(self.folder_btn)
+        row1.addWidget(self.refresh_btn)
+        v.addLayout(row1)
+
+        # --- Row 2: script selection + add button ---
+        row2 = QtWidgets.QHBoxLayout()
+        self.file_combo = QtWidgets.QComboBox()
+        self.file_combo.setMinimumHeight(35)
+        self.file_combo.setMaxVisibleItems(50)  # show 50 items at most
+        self.file_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                    QtWidgets.QSizePolicy.Fixed)
+        self.add_btn = QtWidgets.QPushButton("Add to Queue")
+        row2.addWidget(self.file_combo, stretch=1)
+        row2.addWidget(self.add_btn)
+        v.addLayout(row2)
 
 
-    def update_selected_user_script_combo_box(self,val):
-        self.update_selected_user_script_combo_box_signal.emit(val)
-
-
-    def update_selected_user_script_combo_box_signal_emitted(self, val):
-        self._mw.selected_user_script_combo_box.blockSignals(True)
-        if 'user_script_list' in val:
-            self._mw.selected_user_script_combo_box.clear()
-            self._mw.selected_user_script_combo_box.addItems(
-                val['user_script_list'])  # currentIndexChanged is triggered, value is first item (e.g. sweeps)
-        self._mw.selected_user_script_combo_box.setCurrentText(val['selected_user_script'])
-        self._mw.selected_user_script_combo_box.blockSignals(False)
-
-
-    def update_selected_user_script_from_combo_box(self):
-        self._queue_logic.selected_user_script = str(self._mw.selected_user_script_combo_box.currentText())
-
-
-    def update_script_queue_table_data(self, val):
-        self.update_script_queue_table_data_signal.emit(val)
-
-
-    def update_script_queue_table_data_signal_emitted(self, val):
-        self._mw.script_queue_table.blockSignals(True)
-        self._mw.script_queue_table.clear_table_contents()
-        self._mw.script_queue_table.set_column_names(['name', 'pd'])
-        self._mw.script_queue_table.setColumnWidth(0, 400)
-        self._mw.script_queue_table.setColumnWidth(1, 100)
-        self._mw.script_queue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self._mw.script_queue_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        for cn, cp in val.items():
-            self._mw.script_queue_table.set_column(cn, data=cp, )
-        self._mw.script_queue_table.blockSignals(False)
-
-
-    def update_user_script_folder_text_field(self, val):
-        self.update_user_script_folder_text_field_signal.emit(val)
-
-
-    def update_user_script_folder_text_field_signal_emitted(self, val):
-        self._mw.user_script_folder_text_field.blockSignals(True)
-        self._mw.user_script_folder_text_field.setText(val)
-        self._mw.user_script_folder_text_field.blockSignals(False)
-
-
-    #def user_script_folder_text_field_text_changed(self):
-        #self.user_script_folder = self._mw.user_script_folder_text_field.toPlainText()
-        # needs to be cleaned up, and separated from logic# TODO
-
-    def open_user_script_folder_file_dialog(self):
-        self.user_script_folder = QFileDialog.getExistingDirectory(
-            self._mw,
-            'Select user_script_folder',
-            r"C:\src\qudi\notebooks\UserScripts",
+        self.queue_table = QtWidgets.QTableWidget(0, 7)
+        self.queue_table.setHorizontalHeaderLabels(
+            ["Name", "Status", "Actions", "Start Time", "End Time", "Exec Time (s)", "ID"]
         )
-        self._queue_logic.user_script_folder = self.user_script_folder
-        #this is working - need to do now the gui, no?
-        #it calls a setter which then updates the text, why not update it here?
-        self.update_user_script_folder_text_field(self.user_script_folder)
+        self.queue_table.setColumnHidden(6, True)
+        self.queue_table.verticalHeader().setVisible(False)
+        self.queue_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.queue_table.setColumnWidth(2, 500)
+        self.queue_table.verticalHeader().setDefaultSectionSize(45)
+        # --- Splitter between table and log ---
+        self.log_widget = QtWidgets.QTextEdit()
+        self.log_widget.setReadOnly(True)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        splitter.addWidget(self.queue_table)
+        splitter.addWidget(self.log_widget)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+
+        v.addWidget(splitter)
+
+
+    def apply_theme(self):
+        if qdarktheme:
+            qdarktheme.setup_theme("dark")
+        else:
+            self._win.setStyleSheet("QWidget { background-color: #2b2b2b; color: #e6e6e6; }")
+
+    def _connect_signals(self):
+        # UI event wiring
+        self.folder_btn.clicked.connect(self.select_folder)
+        self.refresh_btn.clicked.connect(self.refresh_py_list)
+        self.add_btn.clicked.connect(self.add_selected_to_queue)
+
+        # QueueManager signals (proxy)
+        s = self._queue_logic.signals
+        s.task_added.connect(self.on_task_added)
+        s.task_updated.connect(self.on_task_updated)
+        s.log_output.connect(self.append_log)
+
+    # ---- UI callbacks ----
+    def select_folder(self):
+        d = QtWidgets.QFileDialog.getExistingDirectory(self._win, "Select Folder", r"C:\src\qudi\notebooks\UserScripts")#str(Path.cwd())
+        if d:
+            self.folder_line.setText(d)
+            self.refresh_py_list()
+
+    def refresh_py_list(self):
+        folder = Path(self.folder_line.text())
+        self.file_combo.clear()
+        if not folder.exists() or not folder.is_dir():
+            return
+        for p in sorted(folder.glob("*.py")):
+            self.file_combo.addItem(str(p.name), str(p))
+
+    def add_selected_to_queue(self):
+        idx = self.file_combo.currentIndex()
+        if idx < 0:
+            return
+        path = self.file_combo.currentData()
+        if not path:
+            return
+        self._queue_logic.add_task(Path(path))
+
+    # ---- table management ----
+    def on_task_added(self, task: ScriptTask):
+        row = self.queue_table.rowCount()
+        self.queue_table.insertRow(row)
+        self.queue_table.setItem(row, 0, QtWidgets.QTableWidgetItem(task.queued_path))
+        self.queue_table.setItem(row, 1, QtWidgets.QTableWidgetItem(task.status.value))
+        for col in range(3, 6):
+            self.queue_table.setItem(row, col, QtWidgets.QTableWidgetItem(""))
+        id_item = QtWidgets.QTableWidgetItem(task.id)
+        self.queue_table.setItem(row, 6, id_item)
+
+        w = QtWidgets.QWidget()
+        h = QtWidgets.QHBoxLayout(w)
+        h.setContentsMargins(2, 2, 2, 2)
+        btn_pause = QtWidgets.QPushButton("Pause")
+        btn_run = QtWidgets.QPushButton("Run")
+        btn_abort = QtWidgets.QPushButton("Abort")
+        btn_delete= QtWidgets.QPushButton("Delete Measurement")
+        btn_pause.clicked.connect(lambda _, tid=task.id: self._queue_logic.pause_task(tid))
+        btn_run.clicked.connect(lambda _, t=task: self._queue_logic.start_task(t))
+        btn_abort.clicked.connect(lambda _, tid=task.id: self._queue_logic.abort_task(tid))
+        btn_delete.clicked.connect(lambda _, tid=task.id: self.Delete_measurement(tid))
+        h.addWidget(btn_pause)
+        h.addWidget(btn_run)
+        h.addWidget(btn_delete)
+        h.addWidget(btn_abort)
+        self.queue_table.setCellWidget(row, 2, w)
+
+    def Delete_measurement(self,tid):
+        tsk=self._queue_logic._find_task_by_id(tid)
+        reply = QMessageBox.question(
+            None, 
+            "Delete File",
+            f"Are you sure you want to delete the measurement data for: \n{tsk.saved_dir}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            try:
+                self._queue_logic.Delete_measurement(tid)
+            except OSError:
+                QMessageBox.warning(None, "Error", "Failed to delete the file.")
+
+    def on_task_updated(self, task: ScriptTask):
+        # Update row cells
+        for r in range(self.queue_table.rowCount()):
+            id_item = self.queue_table.item(r, 6)
+            if id_item and id_item.text() == task.id:
+                self.queue_table.item(r, 1).setText(task.status.value)
+                start_str = task.start_time.strftime("%H:%M:%S") if task.start_time else ""
+                end_str = task.end_time.strftime("%H:%M:%S") if task.end_time else ""
+                exec_time = "{:.1f}".format(task.accumulated_time) if task.accumulated_time else ""
+                self.queue_table.item(r, 3).setText(start_str)
+                self.queue_table.item(r, 4).setText(end_str)
+                self.queue_table.item(r, 5).setText(exec_time)
+                break
+
+        # schedule a safe reorder of the whole table in the next event loop pass
+        #QtCore.QTimer.singleShot(0, self.reorder_queue_table)
+
+    def reorder_queue_table(self):
+        """Rebuild table from authoritative manager.tasks; keep active tasks on top."""
+        try:
+            order = {
+                Status.RUNNING: 0,
+                Status.PAUSED: 1,
+                Status.QUEUED: 2,
+                Status.ERROR: 3,
+                Status.COMPLETED: 4,
+                Status.ABORTED: 5,
+            }
+
+            self.queue_table.setSortingEnabled(False)
+            self.queue_table.blockSignals(True)
+            self.queue_table.setUpdatesEnabled(False)
+            self.queue_table.viewport().setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+            QtWidgets.QApplication.instance().processEvents()
+
+            # detach & schedule deletion of any current action widgets
+            old_widgets = []
+            for r in range(self.queue_table.rowCount()):
+                w = self.queue_table.cellWidget(r, 2)
+                if w is not None:
+                    # disconnect buttons inside to be safe
+                    for btn in w.findChildren(QtWidgets.QPushButton):
+                        try:
+                            btn.clicked.disconnect()
+                        except Exception:
+                            pass
+                    w.setParent(None)
+                    old_widgets.append(w)
+                    w.deleteLater()
+
+            # Sort tasks from manager
+            tasks_sorted = sorted(
+                list(self._queue_logic.tasks),
+                key=lambda t: (order.get(t.status, 99), getattr(t, "start_time") or datetime.min),
+            )
+
+            self.queue_table.setRowCount(0)
+            for task in tasks_sorted:
+                r = self.queue_table.rowCount()
+                self.queue_table.insertRow(r)
+                self.queue_table.setItem(r, 0, QtWidgets.QTableWidgetItem(task.queued_path.name if task.queued_path else ""))
+                self.queue_table.setItem(r, 1, QtWidgets.QTableWidgetItem(task.status.value))
+
+                # New action widgets (fresh)
+                w = QtWidgets.QWidget()
+                h = QtWidgets.QHBoxLayout(w)
+                h.setContentsMargins(2, 2, 2, 2)
+                btn_pause = QtWidgets.QPushButton("Pause")
+                btn_run = QtWidgets.QPushButton("Run")
+                btn_abort = QtWidgets.QPushButton("Abort")
+                btn_pause.clicked.connect(lambda _, tid=task.id: self._queue_logic.pause_task(tid))
+                btn_run.clicked.connect(lambda _, t=task: self._queue_logic.start_task(t))
+                btn_abort.clicked.connect(lambda _, tid=task.id: self._queue_logic.abort_task(tid))
+                h.addWidget(btn_pause)
+                h.addWidget(btn_run)
+                h.addWidget(btn_abort)
+                self.queue_table.setCellWidget(r, 2, w)
+
+                start_str = task.start_time.strftime("%H:%M:%S") if task.start_time else ""
+                end_str = task.end_time.strftime("%H:%M:%S") if task.end_time else ""
+                exec_time = "{:.1f}".format(task.accumulated_time) if task.accumulated_time else ""
+                self.queue_table.setItem(r, 3, QtWidgets.QTableWidgetItem(start_str))
+                self.queue_table.setItem(r, 4, QtWidgets.QTableWidgetItem(end_str))
+                self.queue_table.setItem(r, 5, QtWidgets.QTableWidgetItem(exec_time))
+                id_item = QtWidgets.QTableWidgetItem(task.id)
+                self.queue_table.setItem(r, 6, id_item)
+
+            self.queue_table.viewport().setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+        except Exception as e:
+            try:
+                self.append_log("[ERROR] reorder_queue_table failed: {}\n".format(e))
+            except Exception:
+                pass
+        finally:
+            self.queue_table.setUpdatesEnabled(True)
+            self.queue_table.blockSignals(False)
+            self.queue_table.setSortingEnabled(True)
+            QtWidgets.QApplication.instance().processEvents()
+
+    # ---- logging ----
+    def append_log(self, text: str):
+        self.log_widget.moveCursor(QtGui.QTextCursor.End)
+        self.log_widget.insertPlainText(text)
+        self.log_widget.moveCursor(QtGui.QTextCursor.End)

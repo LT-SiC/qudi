@@ -101,6 +101,7 @@ class CounterLogic(GenericLogic):
         self._saving = False
 
         self.correcting=False
+        self.detector_off=False
         self.count_objective=2000 # counter is gonna try to get the average counts above count_objective
         self.window=int(self._smooth_window_length*1.1)
         self.counter_up=0
@@ -677,6 +678,11 @@ class CounterLogic(GenericLogic):
         else:
             self.heating=False
 
+        if np.mean(self.countdata[0])==0:
+            self.detector_off=True
+        else:
+            self.detector_off=False
+
         # also move the smoothing array
         self.countdata_smoothed = np.roll(self.countdata_smoothed, -1, axis=1)
         # calculate the median and save it
@@ -685,6 +691,7 @@ class CounterLogic(GenericLogic):
             self.countdata_smoothed[i, window:] = np.median(self.countdata[i,-self._smooth_window_length:])
             self.countdata_avg = np.mean(self.countdata[i,:])
         
+
 
 
         # save the data if necessary

@@ -122,7 +122,7 @@ class CounterGui(GUIBase):
         self._mw.count_freq_SpinBox.setValue(self._counting_logic.get_count_frequency())
         self._mw.oversampling_SpinBox.setValue(self._counting_logic.get_counting_samples())
         self._display_trace = 2
-        self._trace_selection = [True, True, True, True]
+        self._trace_selection = [True, False, True, True]
 
         #####################
         # Connecting user interactions
@@ -264,10 +264,10 @@ class CounterGui(GUIBase):
         """
         if self._counting_logic.module_state() == 'locked':
             if 0 < self._counting_logic.countdata_smoothed[(self._display_trace-1), -1] < 10:
-                self._mw.count_value_Label.setText( f"{int(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1])} ({self._counting_logic.countdata_avg})")
+                self._mw.count_value_Label.setText( f"{int(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1])} ({np.round(self._counting_logic.countdata_avg,3)})")
                 #    '{0:,.6f} ({0:.1f})'.format(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1],self._counting_logic.countdata_avg))
             else:
-                self._mw.count_value_Label.setText( f"{int(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1])} ({self._counting_logic.countdata_avg})")
+                self._mw.count_value_Label.setText( f"{int(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1])} ({np.round(self._counting_logic.countdata_avg,3)})")
                 #    '{0:,.0f} ({0:.1f})'.format(self._counting_logic.countdata_smoothed[(self._display_trace-1), -1],self._counting_logic.countdata_avg))
             x_vals = (
                 np.arange(0, self._counting_logic.get_count_length())
@@ -277,9 +277,9 @@ class CounterGui(GUIBase):
             ymin = 2000000000
             for i, ch in enumerate(self._counting_logic.get_channels()):
                 self.curves[2 * i].setData(y=self._counting_logic.countdata[i], x=x_vals)
-                # self.curves[2 * i + 1].setData(y=self._counting_logic.countdata_smoothed[i],
-                #                                x=x_vals
-                #                                )
+                self.curves[2 * i + 1].setData(y=self._counting_logic.countdata_smoothed[i],
+                                               x=x_vals
+                                               )
                 if ymax < self._counting_logic.countdata[i].max() and self._trace_selection[i]:
                     ymax = self._counting_logic.countdata[i].max()
                 if ymin > self._counting_logic.countdata[i].min() and self._trace_selection[i]:

@@ -2,16 +2,20 @@
 from __future__ import print_function, absolute_import, division
 __metaclass__ = type
 
+# ----------------------------
+# Original imports (kept)
+# ----------------------------
 import sys, os
 import logic.misc
 import imp
+# GUI import kept but gui runs differently; no GUI code changed here
 from gui.queue.Queue import queue_gui
 
 from queue import Queue
 
 from PyQt5.QtWidgets import QAbstractItemView, QMainWindow, QFileDialog
 from PyQt5 import QtGui
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import pyqtSignal, QObject
 import PyQt5.uic
 import PyQt5.QtWidgets
 from logic.qudip_enhanced import *
@@ -33,6 +37,7 @@ from core.connector import Connector
 import multiprocess
 import numpy as np
 import logging
+import shutil
 
 import collections
 import importlib
@@ -41,6 +46,72 @@ from core.util.mutex import Mutex
 
 from logic.currentmeasurement.current_measurement import CurrentMeasurementLogic
 # from logic.biaslogic import BiasLogic
+
+# ----------------------------
+# Additions for GUI adapter
+# ----------------------------
+import uuid
+
+# Lightweight Status enum for GUI
+try:
+    # Python 3 Enum exists
+    from enum import Enum
+except Exception:
+    Enum = object
+
+class Status(Enum):
+    QUEUED = "Queued"
+    RUNNING = "Running"
+    PAUSED = "Paused"
+    COMPLETED = "Completed"
+    ERROR = "Error"
+    ABORTED = "Aborted"
+
+# @dataclass
+# class ScriptTask:
+#     id: str
+#     original_path: Path
+#     queued_path: Path
+#     status: Status = Status.QUEUED
+#     process: Optional[QtCore.QProcess] = None
+#     thread: Optional[threading.Thread] = None
+#     worker: Optional[object] = None
+#     pid: Optional[int] = None
+#     stdout: str = ""
+#     stderr: str = ""
+#     start_time: Optional[datetime] = None
+#     end_time: Optional[datetime] = None
+#     accumulated_time: float = 0.0
+#     pause_start: Optional[datetime] = None
+#     is_embedded: bool = False
+
+# Task representation used for GUI signals
+class ScriptTask:
+    def __init__(self, id, module_name, pd, queued_time=None,original_path="",queued_path=""):
+        self.id = id
+        self.module_name = module_name
+        self.pd = pd or {}
+        self.status = Status.QUEUED
+        self.start_time = None
+        self.end_time = None
+        self.accumulated_time = 0.0
+        self.queued_time = queued_time or datetime.datetime.now()
+        self.is_embedded = True
+        self.original_path=original_path
+        self.queued_path=queued_path
+
+    def __repr__(self):
+        return "<ScriptTask id={} module={} status={}>".format(self.id, self.module_name, getattr(self.status, "value", self.status))
+
+# QObject wrapper for signals to avoid metaclass issues
+class QueueSignals(QObject):
+    task_added = pyqtSignal(object)    # emits ScriptTask
+    task_updated = pyqtSignal(object)  # emits ScriptTask
+    log_output = pyqtSignal(str)       # emits log text
+
+# ----------------------------
+# Original ScriptQueueStep & ScriptQueueList (kept as-is)
+# ----------------------------
 class ScriptQueueStep:
     def __init__(self, name, pd):
         self.name = name
@@ -119,6 +190,10 @@ class ScriptQueueList(collections.MutableSequence):
     def __repr__(self):
         return str(self.list)
 
+
+# ----------------------------
+# Main queue_logic (original preserved, with adapter additions)
+# ----------------------------
 class queue_logic(GenericLogic):
 
     # declare connections
@@ -157,6 +232,17 @@ class queue_logic(GenericLogic):
         self._threadlock=Mutex()
         self.script_history = []
 
+        # ----------------------------
+        # Adapter state for new GUI
+        # ----------------------------
+        self.signals = QueueSignals()   # exposes task_added, task_updated, log_output
+        self.tasks = []                 # list[ScriptTask] visible to GUI
+        self._task_by_id = {}           # id -> ScriptTask
+        self._task_by_module = {}       # module_name -> ScriptTask (module names are unique in this design)
+        self._monitor_thread = None
+        self._monitor_stop_event = threading.Event()
+        self._last_script_history_len = 0
+
     def on_activate(self):
 
         self._awg = self.mcas_holder()
@@ -178,7 +264,14 @@ class queue_logic(GenericLogic):
         self.tt = self._transition_tracker
 
     def on_deactivate(self):
-        pass
+        # stop task monitor thread gracefully if active
+        try:
+            self._monitor_stop_event.set()
+            if self._monitor_thread and self._monitor_thread.is_alive():
+                self._monitor_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        # pass
         #FIXME destroy me gently
 
     @property
@@ -199,6 +292,17 @@ class queue_logic(GenericLogic):
         self._script_queue = ScriptQueueList(oktypes=(ScriptQueueStep), list_owner=self)
         self.q = Queue() # use connector
         self.run_thread()
+
+        # start the monitor thread that observes current_script/script_history
+        # This allows emitting task_updated events without changing run()
+        try:
+            self._monitor_stop_event.clear()
+            self._monitor_thread = threading.Thread(target=self._monitor_tasks_loop, name="QueueLogicMonitor", daemon=True)
+            self._monitor_thread.start()
+        except Exception:
+            # non-fatal; continue
+            pass
+
         # self.track_memory_usage_thread()
 
     @property
@@ -343,7 +447,7 @@ class queue_logic(GenericLogic):
         # start the CronDaemon
         #from tools_2 import cron
         #cron.CronDaemon().start()
-        self.dummy_test_variable = 123
+        #self.dummy_test_variable = 123
 
         while True:
             if self.thread.stop_request.is_set():
@@ -352,6 +456,7 @@ class queue_logic(GenericLogic):
                 self.thread.stop_request.clear()
             try: ### runs the measurement!
                 self.current_script = self.q.get()
+                
                 self.thread.stop_request.clear() # this is necessary although it shouldn't be.
                 self.log.info("Starting Userscript {}...{}".format(
                     self.current_script['module_name'][10:],
@@ -360,13 +465,17 @@ class queue_logic(GenericLogic):
                     self.thread.stop_request, queue = self, **self.current_script['pd']) ## Creates a nuclear and runs it.!!!
                 print('entering waiting loop in queue...')
                 if hasattr(self, 'cun'):
+                    task = self._task_by_module[self.current_script['module_name']]
+                    task.saved_dir=self.cun.save_dir
+
                     while self.cun.state == 'run':
                         QtTest.QTest.qSleep(1000)  #This is Qt version for time.sleep to prevent freezinng.
                     else:
                         print("new measurement can be started")
                 else:
                     pass
-                    
+                
+                print('entering waiting loop in queue... 2')
                     
                 self.script_history.append(self.current_script)
                 self.script_queue.pop(0)
@@ -384,6 +493,51 @@ class queue_logic(GenericLogic):
         self.thread.stop_request = multiprocess.Event()
         self.thread.start()
 
+    def add_to_queue(self, name=None, pd=None, folder=None):
+        #self.confocal.counter_state = 'idle'
+        #self.md.stop_awgs()
+        folder = self.user_script_folder if folder is None else folder
+        name = self.selected_user_script if name is None else name
+        pd = self.user_script_params if pd is None else pd
+        if name == '':
+            return
+        try:
+            module_name = self.init_task(name, folder)
+            self.q.put({'module_name': module_name, 'pd': pd})
+            self.script_queue.append(ScriptQueueStep(module_name[10:], self.user_script_params))
+
+            # ----------------------------
+            # GUI adapter: create ScriptTask & emit task_added
+            # ----------------------------
+            try:
+                tid = uuid.uuid4().hex
+                task = ScriptTask(id=tid, module_name=module_name, pd=pd, queued_time=datetime.datetime.now(),original_path=folder,queued_path=name)
+                # try:
+                #     task.saved_dir=sys.modules[module_name].nuclear.save_dir
+                # except Exception as e:
+                #     print("error1: ",e)
+
+                task.start_time=datetime.datetime.now()
+                self.tasks.append(task)
+                self._task_by_id[tid] = task
+                self._task_by_module[module_name] = task
+                # emit signal for GUI
+                try:
+                    self.signals.task_added.emit(task)
+                except Exception:
+                    # if emitting fails, fallback to log_output
+                    try:
+                        self.signals.log_output.emit("[QueueLogic] task_added emit failed for {}\n".format(module_name))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        except Exception:
+            print("Queuelogic: Could not add script to queue.")
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            traceback.print_exception(exc_type, exc_value, exc_tb)
+
     def set_user_script_list(self):
         file_list = []
         unwanted_files = ['__init__.py', 'refocus_confocal_odmr.py']
@@ -399,6 +553,33 @@ class queue_logic(GenericLogic):
             #Instead emit a signal which will updates it.
             self.update_selected_user_script_combo_box_signal.emit(val)
 
+    # Convenience wrapper for GUI: accept a Path and add it to queue
+    def add_task(self, path):
+        """
+        GUI-friendly add: path is a pathlib.Path or string path to a .py file
+        It extracts folder and module name and calls add_to_queue.
+        """
+        try:
+            p = path if isinstance(path, str) else str(path)
+            folder, base = os.path.split(p)
+            name = os.path.splitext(base)[0]
+            # Temporarily set user_script_folder so set_user_script_list doesn't override
+            old_folder = getattr(self, '_user_script_folder', None)
+            self.user_script_folder = folder
+            # set selected user script if possible
+            try:
+                if name in self.user_script_list:
+                    self.selected_user_script = name
+            except Exception:
+                # ignore
+                pass
+            # add to queue using existing routine
+            self.add_to_queue(name=name, pd=self.user_script_params, folder=folder)
+            # restore folder (keep it changed because GUI may expect the new folder)
+            # self.user_script_folder = old_folder
+        except Exception:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            traceback.print_exception(exc_type, exc_value, exc_tb)
 
     @property
     def selected_user_script(self):
@@ -436,20 +617,33 @@ class queue_logic(GenericLogic):
             #if hasattr(self, '_gui'):
                 #self.gui.update_user_script_folder_text_field(val)
 
-    def add_to_queue(self, name=None, pd=None, folder=None):
-        #self.confocal.counter_state = 'idle'
-        #self.md.stop_awgs()
-        folder = self.user_script_folder if folder is None else folder
-        name = self.selected_user_script if name is None else name
-        pd = self.user_script_params if pd is None else pd
-        if name == '':
-            return
+    
+
+    # Convenience wrapper for GUI: accept a Path and add it to queue
+    def add_task(self, path):
+        """
+        GUI-friendly add: path is a pathlib.Path or string path to a .py file
+        It extracts folder and module name and calls add_to_queue.
+        """
         try:
-            module_name = self.init_task(name, folder)
-            self.q.put({'module_name': module_name, 'pd': pd})
-            self.script_queue.append(ScriptQueueStep(module_name[10:], self.user_script_params))
+            p = path if isinstance(path, str) else str(path)
+            folder, base = os.path.split(p)
+            name = os.path.splitext(base)[0]
+            # Temporarily set user_script_folder so set_user_script_list doesn't override
+            old_folder = getattr(self, '_user_script_folder', None)
+            self.user_script_folder = folder
+            # set selected user script if possible
+            try:
+                if name in self.user_script_list:
+                    self.selected_user_script = name
+            except Exception:
+                # ignore
+                pass
+            # add to queue using existing routine
+            self.add_to_queue(name=name, pd=self.user_script_params, folder=folder)
+            # restore folder (keep it changed because GUI may expect the new folder)
+            # self.user_script_folder = old_folder
         except Exception:
-            print("Queuelogic: Could not add script to queue.")
             exc_type, exc_value, exc_tb = sys.exc_info()
             traceback.print_exception(exc_type, exc_value, exc_tb)
 
@@ -520,6 +714,294 @@ class queue_logic(GenericLogic):
                             )
                 ) or root.endswith('transition_tracker_log') or root.endswith('helpers'):
                     for file in files:
-                        if any([file.endswith(i) for i in ['.py', '.dat', '.ui']]):
+                        if any([file.endswith(i) for i in ['.py', '.dat', '.ui', '.hdf']]):
                             zf.write(os.path.join(root, file), os.path.join(root.replace(os.path.commonprefix([root, src]), ""), file))
             zf.close()
+
+
+    # ----------------------------
+    # NEW: monitor loop that observes current_script and script_history
+    # This lets us emit task_updated events without touching run()
+    # ----------------------------
+    def _monitor_tasks_loop(self):
+        """
+        Background thread: periodically checks self.current_script and self.script_history
+        and updates task status accordingly. Runs as daemon.
+        """
+        try:
+            poll_interval = 0.5
+            while not self._monitor_stop_event.is_set():
+                try:
+                    # Mark running task if current_script exists
+                    if hasattr(self, 'current_script') and self.current_script:
+                        modname = self.current_script.get('module_name')
+                        task = self._task_by_module.get(modname)
+                        if task and task.status != Status.RUNNING:
+                            #task.status = Status.RUNNING
+                            #task.start_time = datetime.datetime.now()
+                            try:
+                                self.signals.task_updated.emit(task)
+                            except Exception:
+                                pass
+
+                    # If script_history has grown -> mark the last appended as COMPLETED
+                    hist_len = len(self.script_history) if hasattr(self, 'script_history') else 0
+                    if hist_len != self._last_script_history_len:
+                        # A change occurred: mark any newly finished tasks
+                        # iterate over new entries
+                        for idx in range(self._last_script_history_len, hist_len):
+                            try:
+                                item = self.script_history[idx]
+                                if isinstance(item, dict):
+                                    modname = item.get('module_name')
+                                else:
+                                    # fallback attempt
+                                    modname = getattr(item, 'module_name', None)
+                                if modname:
+                                    task = self._task_by_module.get(modname)
+                                    if task:
+                                        task.status = Status.COMPLETED
+                                        task.end_time = datetime.datetime.now()
+                                        if task.start_time:
+                                            task.accumulated_time = (task.end_time - task.start_time).total_seconds()
+                                        try:
+                                            self.signals.task_updated.emit(task)
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                        self._last_script_history_len = hist_len
+
+                    # If queue cleared unexpectedly: mark queued tasks as ABORTED when queue empty but tasks remain
+                    try:
+                        qsize = self.q.qsize() if hasattr(self, 'q') else 0
+                        if qsize == 0:
+                            # check for tasks still marked QUEUED
+                            for task in list(self.tasks):
+                                if task.status == Status.QUEUED:
+                                    # if script_queue has no matching ScriptQueueStep, consider it removed
+                                    has_in_script_queue = False
+                                    try:
+                                        for step in self.script_queue:
+                                            # step.name holds module name without prefix in original impl:
+                                            # original added ScriptQueueStep(module_name[10:], ...)
+                                            # so compare using suffix of module_name
+                                            if task.module_name.endswith(step.name):
+                                                has_in_script_queue = True
+                                                break
+                                    except Exception:
+                                        pass
+                                    if not has_in_script_queue:
+                                        task.status = Status.ABORTED
+                                        try:
+                                            self.signals.task_updated.emit(task)
+                                        except Exception:
+                                            pass
+                    except Exception:
+                        pass
+
+                except Exception:
+                    # guard against unexpected monitor exceptions
+                    try:
+                        self.signals.log_output.emit("[QueueLogic monitor] exception in monitor loop\n")
+                    except Exception:
+                        pass
+                # sleep
+                self._monitor_stop_event.wait(poll_interval)
+        except Exception:
+            # final guard
+            try:
+                self.signals.log_output.emit("[QueueLogic monitor] terminated due to exception\n")
+            except Exception:
+                pass
+
+
+    def Delete_measurement(self,tid):
+        #self.cun.save_dir
+        tsk=self._find_task_by_id(tid)
+        try:
+            shutil.rmtree(tsk.saved_dir)
+        except Exception as e:
+            print("could not remove folder:", e)
+
+    # ----------------------------
+    # GUI control methods
+    # ----------------------------
+    def _find_task_by_id(self, tid):
+        return self._task_by_id.get(tid)
+
+    def _find_task_by_module(self, module_name):
+        return self._task_by_module.get(module_name)
+
+    def pause_task(self, task_id):
+        """
+        GUI requested pause: attempt to pause the running task if possible
+        or mark queued task as PAUSED.
+        This does not forcibly stop the underlying measurement unless it supports manual pause.
+        """
+        try:
+            task = self._find_task_by_id(task_id)
+            if not task:
+                return
+            if task.status == Status.RUNNING:
+                # if running and nuclear has manual_pause attribute, set it
+                try:
+                    if hasattr(self, 'cun') and hasattr(self.cun, 'manual_pause'):
+                        self.cun.manual_pause = True
+                        task.status = Status.PAUSED
+                        self.signals.task_updated.emit(task)
+                        return
+                except Exception:
+                    pass
+                # otherwise simply mark paused (the measurement may not actually pause)
+                task.status = Status.PAUSED
+                try:
+                    self.signals.task_updated.emit(task)
+                except Exception:
+                    pass
+            elif task.status == Status.QUEUED:
+                task.status = Status.PAUSED
+                try:
+                    self.signals.task_updated.emit(task)
+                except Exception:
+                    pass
+        except Exception:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    def start_task(self, task_or_obj):
+        """
+        GUI requested start: either resume a paused task, or force a queued task to the front of queue.
+        The GUI passes either a ScriptTask or a task id (str).
+        """
+        try:
+            if isinstance(task_or_obj, str):
+                task = self._find_task_by_id(task_or_obj)
+            else:
+                task = task_or_obj
+            if not task:
+                return
+
+            if task.status == Status.PAUSED:
+                # resume: simply mark as queued and re-add to queue if necessary
+                task.status = Status.QUEUED
+                self.cun.manual_pause=False
+                try:
+                    self.signals.task_updated.emit(task)
+                except Exception:
+                    pass
+                # ensure module_name present in q; if absent, re-add it
+                present = False
+                try:
+                    for qitem in list(self.q.queue):
+                        if qitem.get('module_name') == task.module_name:
+                            present = True
+                            break
+                except Exception:
+                    pass
+                if not present:
+                    # re-enqueue
+                    try:
+                        self.q.put({'module_name': task.module_name, 'pd': task.pd})
+                        # restore script_queue entry as original code expects it
+                        try:
+                            # the original script_queue stores the short name (module_name[10:])
+                            shortname = task.module_name[10:]
+                            self.script_queue.append(ScriptQueueStep(shortname, task.pd))
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+            elif task.status == Status.QUEUED:
+                # move to front by reconstructing queue: pop all, put the one first, then others
+                try:
+                    items = []
+                    try:
+                        while True:
+                            items.append(self.q.get_nowait())
+                    except Exception:
+                        pass
+                    # put selected task first then requeue others
+                    new_items = []
+                    found = False
+                    for it in items:
+                        if it.get('module_name') == task.module_name and not found:
+                            new_items.append(it)
+                            found = True
+                        else:
+                            new_items.append(it)
+                    # push back
+                    for it in new_items:
+                        self.q.put(it)
+                    # update status
+                    task.status = Status.QUEUED
+                    try:
+                        self.signals.task_updated.emit(task)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    def abort_task(self, task_id):
+        """
+        GUI requested abort: try to remove from queue or request stop if running.
+        This will attempt to remove queued entries and for running tasks set global stop request.
+        """
+        try:
+            task = self._find_task_by_id(task_id)
+            if not task:
+                return
+
+            self.set_stop_request()
+
+            if task.status == Status.RUNNING:
+                # request stop of the current running thread (this stops all scripts)
+                try:
+                    self.set_stop_request()
+                except Exception:
+                    pass
+                task.status = Status.ABORTED
+                try:
+                    self.signals.task_updated.emit(task)
+                except Exception:
+                    pass
+            elif task.status in (Status.QUEUED, Status.PAUSED):
+                # remove matching entries from queue
+                try:
+                    items = []
+                    try:
+                        while True:
+                            items.append(self.q.get_nowait())
+                    except Exception:
+                        pass
+                    # requeue everything except the aborted task
+                    for it in items:
+                        if it.get('module_name') == task.module_name:
+                            # skip this entry (effectively abort)
+                            continue
+                        self.q.put(it)
+                    # remove any script_queue entries matching the short name
+                    try:
+                        shortname = task.module_name[10:]
+                        # find and remove first matching ScriptQueueStep
+                        for i, step in enumerate(list(self.script_queue.list)):
+                            if step.name == shortname:
+                                del self.script_queue.list[i]
+                                break
+                    except Exception:
+                        pass
+                    task.status = Status.ABORTED
+                    try:
+                        self.signals.task_updated.emit(task)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            traceback.print_exception(exc_type, exc_value, exc_tb)
+
+    # End of class queue_logic

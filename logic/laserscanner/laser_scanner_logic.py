@@ -62,7 +62,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
     fitlogic = Connector(interface='FitLogic')
     setupcontrollogic = Connector(interface = 'SetupControlLogic')
     
-    wavemeterlogic= Connector(interface="WavemeterLoggerLogic")
+    #wavemeterlogic= Connector(interface="WavemeterLoggerLogic")
     
     scan_range = StatusVar('scan_range', [-4, 4])
     number_of_repeats = StatusVar(default=10)
@@ -100,6 +100,7 @@ class LaserScannerLogic(GenericLogic, ple_default):
     # to cut the scan line into smaller parts:
     slices=1
     mode=0
+    with_MW=True
     
     def __init__(self, **kwargs):
         """ Create VoltageScanningLogic object with connectors.
@@ -141,7 +142,11 @@ class LaserScannerLogic(GenericLogic, ple_default):
         self._scanning_device = self.confocalscanner1()
         self._save_logic = self.savelogic()
         self._awg = self.mcas_holder()
-        self._wavemeterlogic = self.wavemeterlogic()
+        self.wavemeter_active=True
+        if hasattr(self,"wavemeterlogic"):
+            self._wavemeterlogic = self.wavemeterlogic()
+        else:
+            self.wavemeter_active=False
         #self.ps=self._awg.mcas_dict.awgs["ps"]
         self._fit_logic = self.fitlogic()
         self._setupcontrol_logic=self.setupcontrollogic()
@@ -149,7 +154,9 @@ class LaserScannerLogic(GenericLogic, ple_default):
         # micrometer!
 
         #I have to do it this strange way in order not to get an error on startup
-        self._wavemeterlogic._counter_logic._laserscanner_logic=self
+        
+        if self.wavemeter_active:
+            self._wavemeterlogic._counter_logic._laserscanner_logic=self
 
         self.a_range = self._scanning_device.get_position_range()[3]
 
@@ -194,7 +201,8 @@ class LaserScannerLogic(GenericLogic, ple_default):
 
         # Initialie data matrix
         self._initialise_data_matrix(100)
-        self._wavemeterlogic.start_scanning() #the array of frequencies will be updated
+        if self.wavemeter_active:
+            self._wavemeterlogic.start_scanning() #the array of frequencies will be updated
         self.start_stop_timestamps=[]
         self.timestamp_list=[]
         self.f_start_end=[]
@@ -488,27 +496,35 @@ class LaserScannerLogic(GenericLogic, ple_default):
             # self.ps.constant(pulse=(0,[],0,0)) # just for safety
             self._awg.mcas_dict.stop_awgs()
             # self.stopped=True # I put the stopped = True into "goto_fitted_peak", since that is the last called method after scanning
-
-            self.measured_frequencies=self._wavemeterlogic._hardware_pull._parentclass._wavelength_data.copy()
+            
+            if self.wavemeter_active:
+                self.measured_frequencies=self._wavemeterlogic._hardware_pull._parentclass._wavelength_data.copy()
             return
 
         if self._scan_counter_up == 0 and self.slice_number==0:
             # move from current voltage to start of scan range.
             self._goto_during_scan(self.scan_range[0])
             #QtTest.QTest.qSleep(5000)
-            self._wavemeterlogic._hardware_pull._parentclass._wavelength_data=[]
+            
+            if self.wavemeter_active:
+                self._wavemeterlogic._hardware_pull._parentclass._wavelength_data=[]
             
 
         if self.upwards_scan:
             # print("running seq: ", self.curr_sequence_name) # Does it affect the sequence if it is started repeatedly?
             self._awg.mcas_dict.stop_awgs()
-            self._awg.mcas_dict[self.curr_sequence_name].run()
+            if self.with_MW:
+                self._awg.mcas_dict[self.curr_sequence_name].run()
+            else: # the sequence is not written when using the ps directly
+                self.setup_seq(self.curr_sequence_name)
             
-            fstart=self._wavemeterlogic._wavemeter_device.get_current_wavelength2()
-            self.start_list.append(time.time()-self._wavemeterlogic._acqusition_start_time)
+            if self.wavemeter_active:
+                fstart=self._wavemeterlogic._wavemeter_device.get_current_wavelength2()
+                self.start_list.append(time.time()-self._wavemeterlogic._acqusition_start_time)
             counts = self._scan_line(self._upwards_ramp_slices[self.slice_number])
-            fend=self._wavemeterlogic._wavemeter_device.get_current_wavelength2()
-            self.f_start_end.append([fstart,fend,len(counts)])
+            if self.wavemeter_active:
+                fend=self._wavemeterlogic._wavemeter_device.get_current_wavelength2()
+                self.f_start_end.append([fstart,fend,len(counts)])
 
             #get the timestamp from the wavemeter
             self.timestamp_list.append(self._scanning_device.timestamp_list)
@@ -519,50 +535,59 @@ class LaserScannerLogic(GenericLogic, ple_default):
             self.local_counts=self.local_counts+list(counts)
             self.slice_number+=1
             if self.slice_number==self.slices:
-                if self.mode==0:
-                    freqs=np.concatenate([np.linspace(fstart,fend,length) for fstart,fend,length in self.f_start_end])
-
-                else:
-                    # calculate the frequencies from the wavelengths measured
-                    freq_data=self._wavemeterlogic._hardware_pull._parentclass._wavelength_data.copy()
-
-                    wavelengths=np.array(freq_data)[:,1]
-                    times=np.array(freq_data)[:,0]
-
-                    freqs=np.concatenate([np.interp(Ts,xp=times,fp=wavelengths) for Ts in self.timestamp_list])
-
                 cts=self.local_counts
-                self.stop_list.append(time.time()-self._wavemeterlogic._acqusition_start_time)
-                #TODO get the real fmin,fmax,points
-                if not self.range_defined:
-                    self.fmin=min(freqs)
-                    self.fmax=max(freqs)
-                    self.range_defined=True
+                if self.wavemeter_active:
+                    if self.mode==0:
+                            freqs=np.concatenate([np.linspace(fstart,fend,length) for fstart,fend,length in self.f_start_end])
 
-                self.f_range=np.linspace(self.fmin,self.fmax,len(self.local_counts)) #this will be the x axis for all the scans #do not calculate it here, t least not fmin and fmax
+                    else:
+                        # calculate the frequencies from the wavelengths measured
+                        
+                            freq_data=self._wavemeterlogic._hardware_pull._parentclass._wavelength_data.copy()
 
-                self.xy_data.append([freqs,cts])
+                            wavelengths=np.array(freq_data)[:,1]
+                            times=np.array(freq_data)[:,0]
 
+                            freqs=np.concatenate([np.interp(Ts,xp=times,fp=wavelengths) for Ts in self.timestamp_list])
 
-                # because freqs might have a lesser span than fmin->fmax, we artificially create the two extrema data points for the interpolation to work
-                if min(freqs)>self.fmin:
-                    freqs=np.concatenate(([self.fmin],freqs))
-                    cts=np.concatenate(([0],cts))
-                    
-                if max(freqs)<self.fmax:
-                    freqs=np.concatenate((freqs,[self.fmax]))
-                    cts=np.concatenate((cts,[0]))
-
-
-                self.interpolated_cts=np.interp(self.f_range, 
-                                                xp=freqs,
-                                                fp=cts
-                                                )
                 
-                #self.tmp_storage.append(self.f_start_end.copy())
+                
+                #if self.wavemeter_active:
+                    self.stop_list.append(time.time()-self._wavemeterlogic._acqusition_start_time)
 
-                self.timestamp_list=[] #reinitialize the timestamp_list
-                self.f_start_end=[]
+                
+                #if self.wavemeter_active:
+                    #TODO get the real fmin,fmax,points
+                    if not self.range_defined:
+                        self.fmin=min(freqs)
+                        self.fmax=max(freqs)
+                        self.range_defined=True
+
+                #if self.wavemeter_active:
+                    self.f_range=np.linspace(self.fmin,self.fmax,len(self.local_counts)) #this will be the x axis for all the scans #do not calculate it here, t least not fmin and fmax
+
+                    self.xy_data.append([freqs,cts])
+
+
+                    # because freqs might have a lesser span than fmin->fmax, we artificially create the two extrema data points for the interpolation to work
+                    if min(freqs)>self.fmin:
+                        freqs=np.concatenate(([self.fmin],freqs))
+                        cts=np.concatenate(([0],cts))
+                        
+                    if max(freqs)<self.fmax:
+                        freqs=np.concatenate((freqs,[self.fmax]))
+                        cts=np.concatenate((cts,[0]))
+
+
+                    self.interpolated_cts=np.interp(self.f_range, 
+                                                    xp=freqs,
+                                                    fp=cts
+                                                    )
+                    
+                    #self.tmp_storage.append(self.f_start_end.copy())
+
+                    self.timestamp_list=[] #reinitialize the timestamp_list
+                    self.f_start_end=[]
 
                 #old code
                 self.scan_matrix[self._scan_counter_up] =self.local_counts # Here occurs an error "cannot copy sequence with size 21 to array axis with dimension 20". This only occured, when variables where changed while the programm is running.
@@ -658,15 +683,32 @@ class LaserScannerLogic(GenericLogic, ple_default):
         seq = self._awg.mcas(name=sequence_name, ch_dict={"2g": [1, 2], "ps": [1]})
         frequencies = np.array([self.MW1_Freq, self.MW2_Freq, self.MW3_Freq])[[self.enable_MW1, self.enable_MW2, self.enable_MW3]]
         seq.start_new_segment("Microwaves", loop_count=500) #+str(frequencies)
+        self.with_MW=True
         if len(self.power) == 0:
-            print('Sequence without MW')
-            seq.asc(name="without MW",
-                    A1=self.enable_A1,
-                    A2=self.enable_A2,
-                    laser = True,
-                    repump=self.enable_Repump,
-                    length_mus=10
-                    )
+            # print('Sequence without MW')
+            # seq.asc(name="without MW",
+            #         A1=self.enable_A1,
+            #         A2=self.enable_A2,
+            #         laser = True,
+            #         repump=self.enable_Repump,
+            #         length_mus=10
+            #         )
+            
+            #### Experimental
+            if True:
+                print("PLE_seq_w\o_MW")
+                self.with_MW=False
+                channels=[]
+                for name,used in zip(['A2','A1',"repump"],[self.enable_A2,self.enable_A1,self.enable_Repump]):
+                    if used:
+                        channels.append(name)
+
+                if "A1" in channels or "A2" in channels:
+                    channels.append("laser")
+
+                self._awg.mcas_dict.awgs["ps"].constant(pulse=(0, channels, self._awg.mcas_dict.awgs["ps"].analog_volt, 0))
+                return
+            
         else:
             print('Setup with MW')
             #enable_A1 = False
@@ -841,7 +883,9 @@ class LaserScannerLogic(GenericLogic, ple_default):
                 self.accepted_list.append(self.happy)
                 self._static_v = peak_volt+self.peak_offset
                 self.goto_voltage(self._static_v)
-                self._wavemeterlogic._counter_logic.fitted_V= self._static_v
+                
+                if self.wavemeter_active:
+                    self._wavemeterlogic._counter_logic.fitted_V= self._static_v
                 #self._wavemeterlogic._wavemeter_device.get_reference_course(self.Frequencies_Fit[-1], channel=2)
 
                 # follow the defect PLE line by applying a voltage to the laser chamber
@@ -905,8 +949,10 @@ class LaserScannerLogic(GenericLogic, ple_default):
         data3 =OrderedDict()
         data3["freqs vs cts per scan"]= self.xy_data
 
-        data4 = OrderedDict()
-        data4["freqs"] = self.measured_frequencies
+        
+        if self.wavemeter_active:
+            data4 = OrderedDict()
+            data4["freqs"] = self.measured_frequencies
 
         parameters = OrderedDict()
         parameters['Number of frequency sweeps (#)'] = self._scan_counter_up
@@ -970,15 +1016,16 @@ class LaserScannerLogic(GenericLogic, ple_default):
         # )
 
         
-        self._save_logic.save_data(
-            data4,
-            filepath=filepath4,
-            parameters=parameters,
-            filelabel=filelabel4,
-            fmt='%.6e',
-            delimiter='\t',
-            timestamp=timestamp
-        )
+        if self.wavemeter_active:
+            self._save_logic.save_data(
+                data4,
+                filepath=filepath4,
+                parameters=parameters,
+                filelabel=filelabel4,
+                fmt='%.6e',
+                delimiter='\t',
+                timestamp=timestamp
+            )
 
         self.log.info('Laser Scan saved to:\n{0}'.format(filepath))
         return 0

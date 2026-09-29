@@ -150,7 +150,7 @@ def electron_pi_and_rf_on(mcas, new_segment = False,iq_mixer=__IQ_MIXER__, **all
         mcas.asc(pd2g1=pd2g[1], name=kwargs.get('name', 'mw+rf'), **pd)
 
 def electron_rabi(mcas, name='e_rabi', iq_mixer=__IQ_MIXER__, mixer_deg=-90, new_segment=False, pulseshape = 'sine', **kwargs):
-
+    #print(kwargs)
     """
     :param transition: addressed transition in ODMR, i.e. 'left' or 'right', just like in TransitionTracker
     """
@@ -197,6 +197,7 @@ def electron_rabi(mcas, name='e_rabi', iq_mixer=__IQ_MIXER__, mixer_deg=-90, new
     else:
         mcas.asc(pd2g1=pd2g[1], name=name, **pd, **kwargs)#UNFUG
         #mcas.asc(pd2g1=pd2g[1], name=name, **pd)
+
 def electron_rabi_parabol(mcas, name='e_rabi', iq_mixer=__IQ_MIXER__, mixer_deg=-90, new_segment=False, **kwargs):
 
     """
@@ -291,19 +292,20 @@ def electron_init(mcas, state, dur, freqs_all_L, freqs_all_R, segment_length = 1
     Duration which doesn't fit into >> loop_counts * segment_length << will be corrected for at the end.
     Initialization segment ends with 1024ns of decay to ensure all lasers are off.
     '''
-    state = state.replace('p', '+').replace('m', '-').replace('32', '1.5').replace('12', '0.5')
+    state = state.replace('p', '+').replace('m', '-').replace('32', '1.5').replace('12', '0.5').replace('3/2', '1.5').replace('1/2', '0.5')
     if newsegment:
         loops, correction_mus  = shared.calculate_loop_count(dur,segment_length)
-        mcas.start_new_segment(name='init', loop_count = loops)
-        mcas.asc(
-            A1= '1.5' in state,
-            A2 = '0.5' in state,
-            laser = True,
-            gateMW = True,
-            length_mus=E.round_length_mus_to_x_multiple_ps(segment_length), 
-            name='resonant_init',
-            pd2g1 = init_state_drive(state, np.append(freqs_all_L, freqs_all_R), max_amp)
-        ) 
+        if loops!=0:
+            mcas.start_new_segment(name='init', loop_count = loops)
+            mcas.asc(
+                A1= '1.5' in state,
+                A2 = '0.5' in state,
+                laser = True,
+                gateMW = True,
+                length_mus=E.round_length_mus_to_x_multiple_ps(segment_length), 
+                name='resonant_init',
+                pd2g1 = init_state_drive(state, np.append(freqs_all_L, freqs_all_R), max_amp)
+            ) 
         mcas.start_new_segment(name='init_correction', loop_count = 1)
         mcas.asc(
             A1= '1.5' in state,
@@ -563,7 +565,7 @@ class SSR(object):
     __GATE_OR_TRIGGER__ = 'trigger'
     # __WAIT_DARK_COUNTS__ = 10*192 #5*1920
 
-    def __init__(self, mcas, queue, frequencies, wait_dur=1., **kwargs):
+    def __init__(self, mcas, queue, frequencies, wait_dur=1.,protected_readout=False, **kwargs):
         super(SSR, self).__init__()
 
         if 'nuc' in kwargs and kwargs['nuc'] is not None:
@@ -589,6 +591,7 @@ class SSR(object):
         self.set_final_wait(kwargs)
         self.set_dur_step()
         self.kwargs = kwargs
+        self.protected_readout=protected_readout
 
     laser_dur = misc.ret_property_typecheck('laser_dur', float)
     wait_dur = misc.ret_property_typecheck('wait_dur', float)
@@ -776,7 +779,7 @@ class SSR(object):
                 pd2g_dict[ch][i] = {}
                 if ch == 2 and not self.iq_mixer:
                     continue
-                pd2g_dict[ch][i]['frequencies'] = self.frequencies[n] # should be [38.5,177.7]
+                pd2g_dict[ch][i]['frequencies'] = self.frequencies[n]
                 if self.robust:
                     pd2g_dict[ch][i].update(dict(type='robust', wave_file=WaveFile(part=self.part_step(n)[i], **self.wave_file_kwargs[n])))
                 else:
@@ -787,6 +790,7 @@ class SSR(object):
                     pd2g_dict[2][i] = {}
                 #if ch == 1 and self.wait_switch > 0: # TODO
                 #    pd2g_dict[ch][i]['gateMW'] = True
+                
         return pd2g_dict
 
     def compile(self):
@@ -795,6 +799,7 @@ class SSR(object):
                         'charge_state',
                         'ple_A2',
                         'ple_A1',
+                        "long_readout",
                         # 'Ex_pi_readout_6ns',
                         # 'Ex_ampl_sweep_SSR',
                         # 'opt_mw_delays_calibration',
@@ -832,12 +837,28 @@ class SSR(object):
                 #   laser = False
 
                 #if self.gate_or_trigger == 'trigger':
-                self.mcas.asc(name = 'triggerTrue_gate', length_mus=__TT_TRIGGER_LENGTH__, gate=True, gateMW = True) # Gated counter
+                if not self.kwargs.get("discard",False): #"discard" in self.kwargs.keys(): #this is a workaround because 4 ssr lead to errors, here we try to have just the ssr code without counting
+                    self.mcas.asc(name = 'triggerTrue_gate', length_mus=__TT_TRIGGER_LENGTH__, gate=True, gateMW = True) # Gated counter
+
                 #else:
                     #self.mcas.asc(length_mus=__TT_TRIGGER_LENGTH__, memory=True, name = 'triggerFalse_memory') # ODMR... ORABI
                     #self.mcas.asc(length_mus=2.1, name = 'wait_after_memory')
 
                 # self.mcas.asc(pd2g1=d[1][2], pd2g2=d[2][2], name='MW', **aa) # CNOT(s) #ORIGINAL VERSION
+                if self.protected_readout: # we use self.kwargs for convenience here
+                    print("doing central pi")
+                    if all(item in self.kwargs.keys() for item in ["central_frequencies","central_amplitudes","central_length_mus"]):
+                        self.mcas.asc(name='MW', length_mus=0.256-__TT_TRIGGER_LENGTH__, gateMW=True)
+                        for idx,freq in enumerate(self.kwargs['central_frequencies']):
+                            pd2g1 = {'frequencies': [self.kwargs['central_frequencies'][idx]], 'type': 'sinehermite', 
+                                    'amplitudes': [self.kwargs['central_amplitudes'][idx]], 'length_mus': self.kwargs['central_length_mus']}
+                            self.mcas.asc(pd2g1=pd2g1, gateMW=True, name='MW', **aa) #Each pi pulse will be writte separately.
+
+                    else:
+                        print(list(self.kwargs.keys()))
+                        print("Raising exception")
+                        raise Exception('You need to have "central_frequencies", "central_amplitudes" and "central_length_mus" in your pd2g dictionary for protected SSR to work.')
+                    
                 self.mcas.asc(name='MW', length_mus=0.256-__TT_TRIGGER_LENGTH__, gateMW=True)
                 
                 for idx,freq in enumerate(d[1][2]['frequencies']): #d[1][2] means awg, ch2?
@@ -848,15 +869,20 @@ class SSR(object):
                     ## Here the frequencies are written separately :(((
                     pd2g1 = {'frequencies': [d[1][2]['frequencies'][idx]], 'type': 'sinehermite', 
                              'amplitudes': [d[1][2]['amplitudes'][idx]], 'length_mus': d[1][2]['length_mus']}
+                    
+                    #print("pd2g1 MW:",pd2g1)
                     self.mcas.asc(pd2g1=pd2g1, gateMW=True, name='MW', **aa) #Each pi pulse will be writte separately.
 
+                #self.mcas.asc(name='MW', length_mus=0.256-__TT_TRIGGER_LENGTH__, gateMW=False)
                 ### ===============================
                 ### Conventional repetitive readout
                 ### ===============================
                 # read out counts after system is fully polarized
                 self.mcas.asc(length_mus=E.round_length_mus_to_x_multiple_ps(self.dur_step[alt_step][5]), laser=True, A2=True, name='Laser A2', **aa)
-                self.mcas.asc(length_mus=E.round_length_mus_to_x_multiple_ps(self.dur_step[alt_step][6]), name='Count', **aa)
-                self.mcas.asc(length_mus=__TT_TRIGGER_LENGTH__, memory=True,name = 'triggerTrue2_memory')
+
+                if not self.kwargs.get("discard",False):
+                    self.mcas.asc(length_mus=E.round_length_mus_to_x_multiple_ps(self.dur_step[alt_step][6]), name='Count', **aa)
+                    self.mcas.asc(length_mus=__TT_TRIGGER_LENGTH__, memory=True,name = 'triggerTrue2_memory')
             
                 #if self.gate_or_trigger == 'trigger':
                 #if 'buffer_time' in self.kwargs.keys():
@@ -897,6 +923,21 @@ class SSR(object):
                     self.mcas.asc(length_mus=self.dur_step[alt_step][5],
                                   A1=True, A2=True, laser = True,
                                   name='State_check', **aa)
+
+                    self.mcas.asc(length_mus=2.0,name = 'wait')
+                    self.mcas.asc(length_mus=__TT_TRIGGER_LENGTH__, memory=True,name = 'memory')
+
+                elif 'nuc' in self.kwargs.keys() and self.kwargs['nuc'] == 'long_readout':
+                    self.mcas.asc(length_mus=__TT_TRIGGER_LENGTH__, gate=True, name='gate1')  # Gated counter
+
+                    #print(self.kwargs,self.kwargs.keys(),print(self.frequencies))
+                    
+                    pd2g1 = {'frequencies': self.frequencies[0], 'type': 'sinehermite', 'amplitudes': self.kwargs["amplitudes"]}
+                    #print("DURRATION::::::::::",self.dur_step[alt_step][5])
+
+                    self.mcas.asc(length_mus=self.dur_step[alt_step][5],
+                                  A1=self.kwargs.get("A1",False), A2=self.kwargs.get("A2",False),repump=self.kwargs.get("repump",False), laser = True, gateMW=True, pd2g1=pd2g1,
+                                  name='long_readout',gate=self.kwargs.get("gate",False), **aa)
 
                     self.mcas.asc(length_mus=2.0,name = 'wait')
                     self.mcas.asc(length_mus=__TT_TRIGGER_LENGTH__, memory=True,name = 'memory')
@@ -3338,13 +3379,46 @@ class SSR(object):
 def ssr(mcas,queue,**kwargs):
     s = SSR(mcas = mcas, queue=queue, **kwargs)
     s.compile()
-    if not 'step_idx' in kwargs:
-        raise Exception('SSR step index must be given, or the gated counter wont know how to readout and treat the data.')
-    if kwargs['step_idx'] is not None:
-        queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][3] = s.repetitions * s.number_of_alternating_steps
-        queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][5] = s.number_of_alternating_steps
-        if queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][5] != 1 and queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][2] == 'auto':
-            queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][2] = 0
+    if not kwargs.get("discard",False):
+        if not 'step_idx' in kwargs : #I know this is horrible coding. fix it if you have time
+            raise Exception('SSR step index must be given, or the gated counter wont know how to readout and treat the data.')
+        if kwargs['step_idx'] is not None:
+            queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][3] = s.repetitions * s.number_of_alternating_steps
+            queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][5] = s.number_of_alternating_steps
+            if queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][5] != 1 and queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][2] == 'auto':
+                queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][2] = 0
+
+def protected_ssr(mcas,queue,**kwargs):
+    s = SSR(mcas = mcas, queue=queue,protected_readout=True, **kwargs)
+    s.compile()
+    if not kwargs.get("discard",False):
+        if not 'step_idx' in kwargs : #I know this is horrible coding. fix it if you have time
+            raise Exception('SSR step index must be given, or the gated counter wont know how to readout and treat the data.')
+        if kwargs['step_idx'] is not None:
+            queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][3] = s.repetitions * s.number_of_alternating_steps
+            queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][5] = s.number_of_alternating_steps
+            if queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][5] != 1 and queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][2] == 'auto':
+                queue._gated_counter.trace.analyze_sequence[kwargs['step_idx']][2] = 0
+
+def long_ssr(mcas,queue,**kwargs):
+    pass
+
+
+def wait(mcas,total_wait,segment_length= 20 ):
+        loops, correction_mus = shared.calculate_loop_count(total_wait, segment_length)
+        # print("loops:", loops)
+        if loops != 0:
+            mcas.start_new_segment(name='wait', loop_count=loops)
+            mcas.asc(length_mus=E.round_length_mus_to_x_multiple_ps(segment_length))
+
+        mcas.start_new_segment(name='wait', loop_count=1)
+        mcas.asc(length_mus=E.round_length_mus_to_x_multiple_ps(correction_mus))
+
+def wait_no_new_segment(mcas,total_wait,**kwargs):
+        print(kwargs)
+        mcas.asc(name="wait",length_mus=E.round_length_mus_to_x_multiple_ps(total_wait),**kwargs)
+
+        
 
 wfpd_standard = collections.OrderedDict(
     [
@@ -3470,6 +3544,1018 @@ wfpd_all_but_standard = collections.OrderedDict(
 #     )
 
 
+# def DDRF(mcas,
+#          global_mw_phase,
+#          second_mw_phase,
+#          rf_phase_increment,
+#          rotation_axis,
+#          pi_dur,
+#          pi2_dur,
+#          detuning,
+#          bath_freq,
+#          tau,
+#          n_rep_ddrf,
+#          ddrft,
+#          mw_freq,
+#          mw_amp,
+#          rf_amp,
+#          MW_phase_increment=0.,
+#          pi2_1=True,
+#          pi2_2=True,
+#          constant_phase_offset=False,
+#          padding=False,
+#          MW_open=0.256,
+#          optimze_rf_usage=False,
+#          include_pi_dur_in_tau=True,
+#          rf_phase_dict=None,
+#          rf_phase_offset=None
+#          ):
+
+#     def awg_time(length):
+#         return E.round_length_mus_to_x_multiple_ps(length, 1)
+
+#     def erabi(mcas, freq, length, amp, phase=0.0):
+#         electron_rabi(mcas,
+#                        name='electron rabi',
+#                        length_mus=awg_time(length),
+#                        amplitudes=[amp],
+#                        frequencies=[freq],
+#                        phases=np.rad2deg(phase),
+#                        new_segment=False,
+#                        gateMW=True,
+#                        gateRF=True,
+#                        mixer_deg=-90,
+#                        pulseshape='sinehermite')
+
+#     def nrabi(mcas, freq, length, amp, phase=0.0):
+#         mcas.asc(length_mus=awg_time(length),
+#                  name='nuc',
+#                  gateRF=True,
+#                  pd2g2={"type": "sinehermite_rf",
+#                         "frequencies": [freq],
+#                         "amplitudes": [amp],
+#                         "phases": [np.rad2deg(phase)],
+#                         "phase_offset_type": 'coherent'})
+
+#     # -------------------------------------------------------------------------
+#     # RF phase settings
+#     # -------------------------------------------------------------------------
+
+#     if rf_phase_dict is None:
+#         rf_phase_dict = {}
+
+#     if rf_phase_offset is None:
+#         rf_phase_offset = rf_phase_increment / 2
+
+#     def get_rf_phase(rf_index):
+#         default_phase = (
+#             rotation_axis
+#             + rf_index * rf_phase_increment
+#             + (rf_index > 0) * rf_phase_offset
+#         )
+
+#         return rf_phase_dict.get(rf_index, default_phase)
+
+#     # -------------------------------------------------------------------------
+#     # Phases
+#     # -------------------------------------------------------------------------
+
+#     phases_dict = sc.pd()
+#     phases = [*phases_dict.ddp[ddrft]] * n_rep_ddrf
+
+#     # -------------------------------------------------------------------------
+#     # Basic timing quantities
+#     # -------------------------------------------------------------------------
+
+#     nuc_drive_freq = bath_freq + detuning
+#     rf_period = abs(1 / nuc_drive_freq)
+
+#     MW_open_awg = awg_time(MW_open)
+#     pi_dur_awg = awg_time(pi_dur)
+
+#     if include_pi_dur_in_tau:
+#         tau_1_target = tau - pi_dur_awg
+#     else:
+#         tau_1_target = tau
+
+#     if tau_1_target <= 0:
+#         raise ValueError(
+#             f"tau is too short: tau={tau}, "
+#             f"pi_dur={pi_dur_awg}, "
+#             f"include_pi_dur_in_tau={include_pi_dur_in_tau}"
+#         )
+
+#     # -------------------------------------------------------------------------
+#     # 1 tau timing
+#     # -------------------------------------------------------------------------
+
+#     rf_periods_1 = int(np.floor(tau_1_target / rf_period + 1e-12))
+
+#     while rf_periods_1 > 0:
+#         rf_tau_1 = rf_periods_1 * rf_period
+#         rest_1 = tau_1_target - rf_tau_1
+
+#         if rest_1 >= MW_open:
+#             break
+
+#         rf_periods_1 -= 1
+
+#     if rf_periods_1 <= 0:
+#         raise ValueError(
+#             f"Not enough time for MW_open in 1-tau interval: "
+#             f"tau_1_target={tau_1_target}, MW_open={MW_open}"
+#         )
+
+#     rf_tau_1 = rf_periods_1 * rf_period
+#     rest_1 = tau_1_target - rf_tau_1
+
+#     if padding:
+#         padding_1 = rest_1 - MW_open
+#         tau_1_actual = rf_tau_1 + padding_1 + MW_open
+#     else:
+#         padding_1 = 0.
+#         tau_1_actual = rf_tau_1 + MW_open
+
+#     # -------------------------------------------------------------------------
+#     # 2 tau timing
+#     # -------------------------------------------------------------------------
+
+#     tau_2_target = 2 * tau_1_actual
+
+#     if optimze_rf_usage:
+#         rf_periods_2 = int(np.floor((tau_2_target - MW_open) / rf_period + 1e-12))
+#     else:
+#         rf_periods_2 = 2 * rf_periods_1
+
+#     if rf_periods_2 <= 0:
+#         raise ValueError(
+#             f"Not enough time for MW_open in 2-tau interval: "
+#             f"tau_2_target={tau_2_target}, MW_open={MW_open}"
+#         )
+
+#     rf_tau_2 = rf_periods_2 * rf_period
+#     rest_2 = tau_2_target - rf_tau_2
+
+#     if rest_2 < MW_open - 1e-12:
+#         raise ValueError(
+#             f"2-tau RF block leaves insufficient MW opening time: "
+#             f"rest_2={rest_2}, MW_open={MW_open}"
+#         )
+
+#     if padding:
+#         padding_2 = rest_2 - MW_open
+#         tau_2_actual = rf_tau_2 + padding_2 + MW_open
+#     else:
+#         padding_2 = 0.
+#         tau_2_actual = rf_tau_2 + MW_open
+
+#     # -------------------------------------------------------------------------
+#     # AWG-rounded timing
+#     # -------------------------------------------------------------------------
+
+#     rf_tau_1_awg = awg_time(rf_tau_1)
+#     rf_tau_2_awg = awg_time(rf_tau_2)
+
+#     padding_1_awg = awg_time(padding_1) if padding else 0.
+#     padding_2_awg = awg_time(padding_2) if padding else 0.
+
+#     tau_1_awg = rf_tau_1_awg + padding_1_awg + MW_open_awg
+#     tau_2_awg = rf_tau_2_awg + padding_2_awg + MW_open_awg
+
+#     if include_pi_dur_in_tau:
+#         tau_1_center_awg = tau_1_awg + pi_dur_awg
+#         tau_2_center_awg = tau_2_awg + pi_dur_awg
+#     else:
+#         tau_1_center_awg = tau_1_awg
+#         tau_2_center_awg = tau_2_awg
+
+#     # -------------------------------------------------------------------------
+#     # Timing diagnostics
+#     # -------------------------------------------------------------------------
+
+#     print(
+#         "================ DDRF timing ================",
+#         f"RF period                  = {rf_period}",
+#         f"requested tau              = {tau}",
+#         f"pi duration (AWG)          = {pi_dur_awg}",
+#         f"tau_1 target RF+rest       = {tau_1_target}",
+#         f"tau_1 RF periods           = {rf_periods_1}",
+#         f"tau_1 RF duration          = {rf_tau_1}",
+#         f"tau_1 rest                  = {rest_1}",
+#         f"tau_1 padding               = {padding_1}",
+#         f"tau_1 actual                = {tau_1_actual}",
+#         f"tau_2 target                = {tau_2_target}",
+#         f"tau_2 RF periods           = {rf_periods_2}",
+#         f"tau_2 RF duration          = {rf_tau_2}",
+#         f"tau_2 rest                  = {rest_2}",
+#         f"tau_2 padding               = {padding_2}",
+#         f"tau_2 actual                = {tau_2_actual}",
+#         f"tau_2 / tau_1              = {tau_2_actual / tau_1_actual}",
+#         f"MW_open                    = {MW_open}",
+#         f"MW_open (AWG)              = {MW_open_awg}",
+#         f"RF tau_1 (AWG)             = {rf_tau_1_awg}",
+#         f"RF tau_2 (AWG)             = {rf_tau_2_awg}",
+#         f"padding_1 (AWG)            = {padding_1_awg}",
+#         f"padding_2 (AWG)            = {padding_2_awg}",
+#         f"1-tau interval (AWG)       = {tau_1_awg}",
+#         f"2-tau interval (AWG)       = {tau_2_awg}",
+#         f"2*tau_1 (AWG)              = {2 * tau_1_awg}",
+#         f"center spacing 1-tau       = {tau_1_center_awg}",
+#         f"center spacing 2-tau       = {tau_2_center_awg}",
+#         f"optimze_rf_usage           = {optimze_rf_usage}",
+#         f"padding                    = {padding}",
+#         f"include_pi_dur_in_tau      = {include_pi_dur_in_tau}",
+#         f"rf_phase_increment         = {rf_phase_increment}",
+#         f"rf_phase_offset            = {rf_phase_offset}",
+#         f"rf_phase_dict              = {rf_phase_dict}",
+#         "==============================================",
+#         sep="\n"
+#     )
+
+#     # -------------------------------------------------------------------------
+#     # Helper: add delay before next MW pulse
+#     # -------------------------------------------------------------------------
+
+#     def add_interval_padding(padding_time):
+#         if padding:
+#             wait_no_new_segment(mcas, awg_time(padding_time), gate_RF=True)
+
+#         wait_no_new_segment(mcas, MW_open_awg, gate_RF=True, gate_MW=True)
+
+#     # -------------------------------------------------------------------------
+#     # RF block counter
+#     #
+#     # RF block 0 = first 1-tau RF block
+#     # RF block 1 = first 2-tau RF block
+#     # RF block 2 = second 2-tau RF block
+#     # ...
+#     # RF block N = final 1-tau RF block
+#     # -------------------------------------------------------------------------
+
+#     rf_index = 0
+
+#     # -------------------------------------------------------------------------
+#     # Initial pi/2
+#     # -------------------------------------------------------------------------
+
+#     if pi2_1:
+#         wait_no_new_segment(mcas, MW_open_awg, gate_RF=False, gate_MW=True)
+
+#         print(mw_freq, pi2_dur, mw_amp, global_mw_phase)
+
+#         erabi(mcas, mw_freq, pi2_dur, mw_amp, global_mw_phase)
+
+#     # -------------------------------------------------------------------------
+#     # First 1-tau RF evolution
+#     # -------------------------------------------------------------------------
+
+#     rf_phase = get_rf_phase(rf_index)
+
+#     print("RF index:", rf_index, "phase:", rf_phase)
+#     print(nuc_drive_freq, rf_tau_1, rf_amp, rf_phase)
+
+#     nrabi(mcas, nuc_drive_freq, rf_tau_1, rf_amp, phase=rf_phase)
+
+#     rf_index += 1
+
+#     # -------------------------------------------------------------------------
+#     # Intermediate pi pulses + 2-tau RF blocks
+#     # -------------------------------------------------------------------------
+
+#     for i, phase in enumerate(phases[:-1]):
+
+#         add_interval_padding(padding_1 if i == 0 else padding_2)
+
+#         mw_phase = (
+#             phase
+#             + global_mw_phase
+#             + MW_phase_increment * i
+#         )
+
+#         print(mw_freq, pi_dur, mw_amp, mw_phase)
+
+#         erabi(mcas, mw_freq, pi_dur, mw_amp, mw_phase)
+
+#         # -------------------------------------------------------------
+#         # 2-tau RF evolution
+#         # -------------------------------------------------------------
+
+#         rf_phase = get_rf_phase(rf_index)
+
+#         print("RF index:", rf_index, "phase:", rf_phase)
+#         print(nuc_drive_freq, rf_tau_2, rf_amp, rf_phase)
+
+#         nrabi(mcas, nuc_drive_freq, rf_tau_2, rf_amp, phase=rf_phase)
+
+#         rf_index += 1
+
+#     # -------------------------------------------------------------------------
+#     # Last pi pulse
+#     # -------------------------------------------------------------------------
+
+#     add_interval_padding(padding_2)
+
+#     last_phase = (
+#         phases[-1]
+#         + global_mw_phase
+#         + MW_phase_increment * (len(phases) - 1)
+#     )
+
+#     print(mw_freq, pi_dur, mw_amp, last_phase)
+
+#     erabi(mcas, mw_freq, pi_dur, mw_amp, last_phase)
+
+#     # -------------------------------------------------------------------------
+#     # Final 1-tau RF evolution
+#     # -------------------------------------------------------------------------
+
+#     rf_phase = get_rf_phase(rf_index)
+
+#     print("RF index:", rf_index, "phase:", rf_phase)
+#     print(nuc_drive_freq, rf_tau_1, rf_amp, rf_phase)
+
+#     nrabi(mcas, nuc_drive_freq, rf_tau_1, rf_amp, phase=rf_phase)
+
+#     rf_index += 1
+
+#     # -------------------------------------------------------------------------
+#     # Padding before final pi/2
+#     # -------------------------------------------------------------------------
+
+#     if pi2_2:
+
+#         if padding:
+#             wait_no_new_segment(mcas, awg_time(padding_1), gate_RF=True)
+
+#         print(mw_freq, pi2_dur, mw_amp, global_mw_phase + second_mw_phase)
+
+#         wait_no_new_segment(mcas, MW_open_awg, gate_RF=False, gate_MW=True)
+
+#         erabi(mcas,
+#               mw_freq,
+#               pi2_dur,
+#               mw_amp,
+#               global_mw_phase + second_mw_phase)
+
+def DDRF(mcas,
+         global_mw_phase,
+         second_mw_phase,
+         rf_phase_increment,
+         rotation_axis,
+         pi_dur,
+         pi2_dur,
+         detuning,
+         bath_freq,
+         tau,
+         n_rep_ddrf,
+         ddrft,
+         mw_freq,
+         mw_amp,
+         rf_amp,
+         MW_phase_increment=0.,
+         pi2_1=True,
+         pi2_2=True,
+         constant_phase_offset=False,
+         padding=False,
+         MW_open=0.256,
+         optimze_rf_usage=False,
+         include_pi_dur_in_tau=True,
+         rf_phase_dict=None,
+         rf_phase_offset=None,
+         measurement=None
+         ):
+
+    def awg_time(length):
+        return E.round_length_mus_to_x_multiple_ps(length, 1)
+
+    def erabi(mcas, freq, length, amp, phase=0.0):
+        electron_rabi(mcas,
+                       name='electron rabi',
+                       length_mus=awg_time(length),
+                       amplitudes=[amp],
+                       frequencies=[freq],
+                       phases=np.rad2deg(phase),
+                       new_segment=False,
+                       gateMW=True,
+                       gateRF=True,
+                       mixer_deg=-90,
+                       pulseshape='sinehermite')
+
+    def nrabi(mcas, freq, length, amp, phase=0.0):
+        mcas.asc(length_mus=awg_time(length),
+                 name='nuc',
+                 gateRF=True,
+                 pd2g2={"type": "sinehermite_rf",
+                        "frequencies": [freq],
+                        "amplitudes": [amp],
+                        "phases": [np.rad2deg(phase)],
+                        "phase_offset_type": 'coherent'})
+
+    # -------------------------------------------------------------------------
+    # RF phase settings
+    # -------------------------------------------------------------------------
+
+    if rf_phase_dict is None:
+        rf_phase_dict = {}
+
+    if rf_phase_offset is None:
+        rf_phase_offset = rf_phase_increment / 2
+
+    def get_rf_phase(rf_index):
+        default_phase = (
+            rotation_axis
+            + rf_index * rf_phase_increment
+            + (rf_index > 0) * rf_phase_offset
+        )
+
+        return rf_phase_dict.get(rf_index, default_phase)
+
+    # -------------------------------------------------------------------------
+    # Phases
+    # -------------------------------------------------------------------------
+
+    phases_dict = sc.pd()
+    phases = [*phases_dict.ddp[ddrft]] * n_rep_ddrf
+
+    # -------------------------------------------------------------------------
+    # Basic timing quantities
+    # -------------------------------------------------------------------------
+
+    nuc_drive_freq = bath_freq + detuning
+    rf_period = abs(1 / nuc_drive_freq)
+
+    MW_open_awg = awg_time(MW_open)
+    pi_dur_awg = awg_time(pi_dur)
+
+    if include_pi_dur_in_tau:
+        tau_1_target = tau - pi_dur_awg
+    else:
+        tau_1_target = tau
+
+    if tau_1_target <= 0:
+        raise ValueError(
+            f"tau is too short: tau={tau}, "
+            f"pi_dur={pi_dur_awg}, "
+            f"include_pi_dur_in_tau={include_pi_dur_in_tau}"
+        )
+
+    # -------------------------------------------------------------------------
+    # 1 tau timing
+    # -------------------------------------------------------------------------
+
+    rf_periods_1 = int(np.floor(tau_1_target / rf_period + 1e-12))
+
+    while rf_periods_1 > 0:
+        rf_tau_1 = rf_periods_1 * rf_period
+        rest_1 = tau_1_target - rf_tau_1
+
+        if rest_1 >= MW_open:
+            break
+
+        rf_periods_1 -= 1
+
+    if rf_periods_1 <= 0:
+        raise ValueError(
+            f"Not enough time for MW_open in 1-tau interval: "
+            f"tau_1_target={tau_1_target}, MW_open={MW_open}"
+        )
+
+    rf_tau_1 = rf_periods_1 * rf_period
+    rest_1 = tau_1_target - rf_tau_1
+
+    if padding:
+        padding_1 = rest_1 - MW_open
+        tau_1_actual = rf_tau_1 + padding_1 + MW_open
+    else:
+        padding_1 = 0.
+        tau_1_actual = rf_tau_1 + MW_open
+
+    # -------------------------------------------------------------------------
+    # 2 tau timing
+    # -------------------------------------------------------------------------
+
+    tau_2_target = 2 * tau_1_actual
+
+    if optimze_rf_usage:
+        rf_periods_2 = int(
+            np.floor((tau_2_target - MW_open) / rf_period + 1e-12)
+        )
+    else:
+        rf_periods_2 = 2 * rf_periods_1
+
+    if rf_periods_2 <= 0:
+        raise ValueError(
+            f"Not enough time for MW_open in 2-tau interval: "
+            f"tau_2_target={tau_2_target}, MW_open={MW_open}"
+        )
+
+    rf_tau_2 = rf_periods_2 * rf_period
+    rest_2 = tau_2_target - rf_tau_2
+
+    if rest_2 < MW_open - 1e-12:
+        raise ValueError(
+            f"2-tau RF block leaves insufficient MW opening time: "
+            f"rest_2={rest_2}, MW_open={MW_open}"
+        )
+
+    if padding:
+        padding_2 = rest_2 - MW_open
+        tau_2_actual = rf_tau_2 + padding_2 + MW_open
+    else:
+        padding_2 = 0.
+        tau_2_actual = rf_tau_2 + MW_open
+
+    # -------------------------------------------------------------------------
+    # AWG-rounded timing
+    # -------------------------------------------------------------------------
+
+    rf_tau_1_awg = awg_time(rf_tau_1)
+    rf_tau_2_awg = awg_time(rf_tau_2)
+
+    padding_1_awg = awg_time(padding_1) if padding else 0.
+    padding_2_awg = awg_time(padding_2) if padding else 0.
+
+    tau_1_awg = rf_tau_1_awg + padding_1_awg + MW_open_awg
+    tau_2_awg = rf_tau_2_awg + padding_2_awg + MW_open_awg
+
+    if include_pi_dur_in_tau:
+        tau_1_center_awg = tau_1_awg + pi_dur_awg
+        tau_2_center_awg = tau_2_awg + pi_dur_awg
+    else:
+        tau_1_center_awg = tau_1_awg
+        tau_2_center_awg = tau_2_awg
+
+    # -------------------------------------------------------------------------
+    # Timing diagnostics
+    # -------------------------------------------------------------------------
+
+    print(
+        "================ DDRF timing ================",
+        f"RF period                  = {rf_period}",
+        f"requested tau              = {tau}",
+        f"pi duration (AWG)          = {pi_dur_awg}",
+        f"tau_1 target RF+rest       = {tau_1_target}",
+        f"tau_1 RF periods           = {rf_periods_1}",
+        f"tau_1 RF duration          = {rf_tau_1}",
+        f"tau_1 rest                  = {rest_1}",
+        f"tau_1 padding               = {padding_1}",
+        f"tau_1 actual                = {tau_1_actual}",
+        f"tau_2 target                = {tau_2_target}",
+        f"tau_2 RF periods           = {rf_periods_2}",
+        f"tau_2 RF duration          = {rf_tau_2}",
+        f"tau_2 rest                  = {rest_2}",
+        f"tau_2 padding               = {padding_2}",
+        f"tau_2 actual                = {tau_2_actual}",
+        f"tau_2 / tau_1              = {tau_2_actual / tau_1_actual}",
+        f"MW_open                    = {MW_open}",
+        f"MW_open (AWG)              = {MW_open_awg}",
+        f"RF tau_1 (AWG)             = {rf_tau_1_awg}",
+        f"RF tau_2 (AWG)             = {rf_tau_2_awg}",
+        f"padding_1 (AWG)            = {padding_1_awg}",
+        f"padding_2 (AWG)            = {padding_2_awg}",
+        f"1-tau interval (AWG)       = {tau_1_awg}",
+        f"2-tau interval (AWG)       = {tau_2_awg}",
+        f"2*tau_1 (AWG)              = {2 * tau_1_awg}",
+        f"center spacing 1-tau       = {tau_1_center_awg}",
+        f"center spacing 2-tau       = {tau_2_center_awg}",
+        f"optimze_rf_usage           = {optimze_rf_usage}",
+        f"padding                    = {padding}",
+        f"include_pi_dur_in_tau      = {include_pi_dur_in_tau}",
+        f"rf_phase_increment         = {rf_phase_increment}",
+        f"rf_phase_offset            = {rf_phase_offset}",
+        f"rf_phase_dict              = {rf_phase_dict}",
+        f"measurement                = {measurement}",
+        "==============================================",
+        sep="\n"
+    )
+
+    # -------------------------------------------------------------------------
+    # Measurement settings
+    #
+    # Example:
+    # measurement={3: {"fraction": 0.4, "phase": np.pi/2}}
+    #
+    # RF block 3:
+    #   - evolve for 40% of the RF block
+    #   - apply MW pi/2 with phase pi/2
+    #   - terminate sequence
+    # -------------------------------------------------------------------------
+
+    if measurement is not None:
+
+        if not isinstance(measurement, dict):
+            raise TypeError(
+                "measurement must be a dictionary, e.g. "
+                "{3: {'fraction': 0.4, 'phase': np.pi/2}}"
+            )
+
+        if len(measurement) != 1:
+            raise ValueError(
+                "Only one measurement point can be specified because "
+                "the sequence terminates after the measurement."
+            )
+
+        measurement_rf_index, measurement_settings = next(
+            iter(measurement.items())
+        )
+
+        if not isinstance(measurement_rf_index, (int, np.integer)):
+            raise TypeError(
+                "The measurement RF block index must be an integer."
+            )
+
+        if not isinstance(measurement_settings, dict):
+            raise TypeError(
+                "Measurement settings must be a dictionary containing "
+                "'fraction' and 'phase'."
+            )
+
+        if "fraction" not in measurement_settings:
+            raise ValueError(
+                "Measurement settings must contain 'fraction'."
+            )
+
+        if "phase" not in measurement_settings:
+            raise ValueError(
+                "Measurement settings must contain 'phase'."
+            )
+
+        measurement_fraction = measurement_settings["fraction"]
+        measurement_phase = measurement_settings["phase"]
+
+        if not 0 <= measurement_fraction <= 1:
+            raise ValueError(
+                "Measurement fraction must be between 0 and 1."
+            )
+
+        if measurement_rf_index < 0:
+            raise ValueError(
+                "Measurement RF block index must be >= 0."
+            )
+
+    else:
+        measurement_rf_index = None
+        measurement_fraction = None
+        measurement_phase = None
+
+    # -------------------------------------------------------------------------
+    # Helper: perform measurement inside an RF block
+    # -------------------------------------------------------------------------
+
+    def perform_measurement(rf_index, rf_duration, rf_phase):
+        if measurement is None:
+            return False
+
+        if rf_index != measurement_rf_index:
+            return False
+
+        measurement_duration = awg_time(
+            measurement_fraction * rf_duration
+        )
+
+        print(
+            "================ DDRF measurement ===========",
+            f"RF index                   = {rf_index}",
+            f"requested fraction        = {measurement_fraction}",
+            f"requested RF duration     = {rf_duration}",
+            f"measurement RF duration   = {measurement_duration}",
+            f"RF phase                  = {rf_phase}",
+            f"MW pi/2 phase             = {measurement_phase}",
+            "==============================================",
+            sep="\n"
+        )
+
+        # -------------------------------------------------------------
+        # Evolve through the requested fraction of the RF block
+        # -------------------------------------------------------------
+
+        if measurement_duration > 0:
+            nrabi(
+                mcas,
+                nuc_drive_freq,
+                measurement_duration,
+                rf_amp,
+                phase=rf_phase
+            )
+
+        # -------------------------------------------------------------
+        # Open MW gate before measurement pulse
+        # -------------------------------------------------------------
+
+        wait_no_new_segment(
+            mcas,
+            MW_open_awg,
+            gate_RF=False,
+            gate_MW=True
+        )
+
+        # -------------------------------------------------------------
+        # Measurement MW pi/2 pulse
+        #
+        # IMPORTANT:
+        # measurement_phase is used directly here.
+        # It is not combined with the RF phase.
+        # -------------------------------------------------------------
+
+        print(
+            "Measurement pi/2:",
+            mw_freq,
+            pi2_dur,
+            mw_amp,
+            measurement_phase
+        )
+
+        erabi(
+            mcas,
+            mw_freq,
+            pi2_dur,
+            mw_amp,
+            measurement_phase
+        )
+
+        # -------------------------------------------------------------
+        # Stop the sequence immediately after the measurement pulse
+        # -------------------------------------------------------------
+
+        return True
+
+    # -------------------------------------------------------------------------
+    # Helper: add delay before next MW pulse
+    # -------------------------------------------------------------------------
+
+    def add_interval_padding(padding_time):
+        if padding:
+            wait_no_new_segment(
+                mcas,
+                awg_time(padding_time),
+                gate_RF=True
+            )
+
+        wait_no_new_segment(
+            mcas,
+            MW_open_awg,
+            gate_RF=True,
+            gate_MW=True
+        )
+
+    # -------------------------------------------------------------------------
+    # RF block counter
+    #
+    # RF block 0 = first 1-tau RF block
+    # RF block 1 = first 2-tau RF block
+    # RF block 2 = second 2-tau RF block
+    # ...
+    # RF block N = final 1-tau RF block
+    # -------------------------------------------------------------------------
+
+    rf_index = 0
+
+    # -------------------------------------------------------------------------
+    # Initial pi/2
+    # -------------------------------------------------------------------------
+
+    if pi2_1:
+        wait_no_new_segment(
+            mcas,
+            MW_open_awg,
+            gate_RF=True,
+            gate_MW=True
+        )
+
+        print(
+            mw_freq,
+            pi2_dur,
+            mw_amp,
+            global_mw_phase
+        )
+
+        erabi(
+            mcas,
+            mw_freq,
+            pi2_dur,
+            mw_amp,
+            global_mw_phase
+        )
+
+    # -------------------------------------------------------------------------
+    # First 1-tau RF evolution
+    # -------------------------------------------------------------------------
+
+    rf_phase = get_rf_phase(rf_index)
+
+    print(
+        "RF index:",
+        rf_index,
+        "phase:",
+        rf_phase
+    )
+
+    print(
+        nuc_drive_freq,
+        rf_tau_1,
+        rf_amp,
+        rf_phase
+    )
+
+    # -------------------------------------------------------------
+    # Measurement can occur inside RF block 0
+    # -------------------------------------------------------------
+
+    if perform_measurement(
+        rf_index,
+        rf_tau_1,
+        rf_phase
+    ):
+        return
+
+    nrabi(
+        mcas,
+        nuc_drive_freq,
+        rf_tau_1,
+        rf_amp,
+        phase=rf_phase
+    )
+
+    rf_index += 1
+
+    # -------------------------------------------------------------------------
+    # Intermediate pi pulses + 2-tau RF blocks
+    # -------------------------------------------------------------------------
+
+    for i, phase in enumerate(phases[:-1]):
+
+        add_interval_padding(
+            padding_1 if i == 0 else padding_2
+        )
+
+        mw_phase = (
+            phase
+            + global_mw_phase
+            + MW_phase_increment * i
+        )
+
+        print(
+            mw_freq,
+            pi_dur,
+            mw_amp,
+            mw_phase
+        )
+
+        erabi(
+            mcas,
+            mw_freq,
+            pi_dur,
+            mw_amp,
+            mw_phase
+        )
+
+        # -------------------------------------------------------------
+        # 2-tau RF evolution
+        # -------------------------------------------------------------
+
+        rf_phase = get_rf_phase(rf_index)
+
+        print(
+            "RF index:",
+            rf_index,
+            "phase:",
+            rf_phase
+        )
+
+        print(
+            nuc_drive_freq,
+            rf_tau_2,
+            rf_amp,
+            rf_phase
+        )
+
+        # -------------------------------------------------------------
+        # Measurement can occur inside this 2-tau RF block
+        # -------------------------------------------------------------
+
+        if perform_measurement(
+            rf_index,
+            rf_tau_2,
+            rf_phase
+        ):
+            return
+
+        nrabi(
+            mcas,
+            nuc_drive_freq,
+            rf_tau_2,
+            rf_amp,
+            phase=rf_phase
+        )
+
+        rf_index += 1
+
+    # -------------------------------------------------------------------------
+    # Last pi pulse
+    # -------------------------------------------------------------------------
+
+    add_interval_padding(padding_2)
+
+    last_phase = (
+        phases[-1]
+        + global_mw_phase
+        + MW_phase_increment * (len(phases) - 1)
+    )
+
+    print(
+        mw_freq,
+        pi_dur,
+        mw_amp,
+        last_phase
+    )
+
+    erabi(
+        mcas,
+        mw_freq,
+        pi_dur,
+        mw_amp,
+        last_phase
+    )
+
+    # -------------------------------------------------------------------------
+    # Final 1-tau RF evolution
+    # -------------------------------------------------------------------------
+
+    rf_phase = get_rf_phase(rf_index)
+
+    print(
+        "RF index:",
+        rf_index,
+        "phase:",
+        rf_phase
+    )
+
+    print(
+        nuc_drive_freq,
+        rf_tau_1,
+        rf_amp,
+        rf_phase
+    )
+
+    # -------------------------------------------------------------
+    # Measurement can occur inside the final RF block
+    # -------------------------------------------------------------
+
+    if perform_measurement(
+        rf_index,
+        rf_tau_1,
+        rf_phase
+    ):
+        return
+
+    nrabi(
+        mcas,
+        nuc_drive_freq,
+        rf_tau_1,
+        rf_amp,
+        phase=rf_phase
+    )
+
+    rf_index += 1
+
+    # -------------------------------------------------------------------------
+    # Padding before final pi/2
+    # -------------------------------------------------------------------------
+
+    if pi2_2:
+
+        if padding:
+            wait_no_new_segment(
+                mcas,
+                awg_time(padding_1),
+                gate_RF=True
+            )
+
+        print(
+            mw_freq,
+            pi2_dur,
+            mw_amp,
+            global_mw_phase + second_mw_phase
+        )
+
+        wait_no_new_segment(
+            mcas,
+            MW_open_awg,
+            gate_RF=False,
+            gate_MW=True
+        )
+
+        erabi(
+            mcas,
+            mw_freq,
+            pi2_dur,
+            mw_amp,
+            global_mw_phase + second_mw_phase
+        )
+
+
+
+
 def ddrf(mcas,
          global_mw_phase,
          second_mw_phase,
@@ -3485,8 +4571,14 @@ def ddrf(mcas,
          mw_freq,
          mw_amp,
          rf_amp,
+         MW_phase_increment=0.,
          pi2_1 = True,
-         pi2_2 = True
+         pi2_2 = True,
+         constant_phase_offset = False,
+         padding=False,
+         rf_phase_offset=0,
+         measurements=[],
+         phase_dict={},
          ):
     pi2 = sc.Rabi(t_rabi=pi2_dur,
                   omega=1 / pi2_dur*4,
@@ -3504,7 +4596,10 @@ def ddrf(mcas,
                     rf_phase_increment = rf_phase_increment,
                     rotation_axis= rotation_axis,
                     tau=tau,
-                    min_wait_dur = .256
+                    min_wait_dur = .256,
+                    constant_phase_offset = constant_phase_offset,
+                    rf_phase_offset=rf_phase_offset,
+                    phase_dict=phase_dict,
                     )
     sequence = []
     if pi2_1:
@@ -3523,8 +4618,14 @@ def ddrf(mcas,
              mw_freq = mw_freq,
              rf_freq = bath_freq + detuning,
              mw_amp = mw_amp,
-             rf_amp = rf_amp
+             rf_amp = rf_amp,
+             MW_phase_increment=MW_phase_increment,
+             real_tau=tau,
+             padding=padding,
+             measurements=measurements,
              )
+
+    #return seq # for debugging
 
 def waveform_ddrf(mcas,
                   seq,
@@ -3532,12 +4633,16 @@ def waveform_ddrf(mcas,
                   mw_freq,
                   rf_freq,
                   mw_amp,
-                  rf_amp
+                  rf_amp,
+                  MW_phase_increment,
+                  real_tau,
+                  padding,
+                  measurements,
                   ):
-    def erabi(mcas, freq, length, amp, phase=0.0):
+    def erabi(mcas, freq, length, amp, phase=0.0, name=""):
         electron_rabi(mcas,
-                        name='electron rabi',
-                        length_mus=length,
+                        name=name if name else 'electron rabi',
+                        length_mus=E.round_length_mus_to_x_multiple_ps(length,1),
                         amplitudes=[amp],
                         frequencies=[freq],
                         phases=np.rad2deg(phase),
@@ -3547,7 +4652,10 @@ def waveform_ddrf(mcas,
                         mixer_deg=-90,
                         pulseshape='sinehermite',
                         )
-    def nrabi(mcas, freq, length, amp, phase=0.0):
+        
+    def nrabi(mcas, freq, length, amp, phase=0.0, real_tau=None):
+        real_tau*=[1,2][length>np.mean(rf[:,0])]
+        #print("length",length,real_tau)
         mcas.asc(
             length_mus=E.round_length_mus_to_x_multiple_ps(length,1),
             name='nuc',
@@ -3555,29 +4663,79 @@ def waveform_ddrf(mcas,
             pd2g2={"type": "sinehermite_rf", "frequencies": [freq], "amplitudes": [amp], "phases": [np.rad2deg(phase)],
                     "phase_offset_type": 'coherent'}
         )
-    
+
+        if real_tau and padding:
+            #print(wait[:,0])
+            real_tau-=2*[wait[0,0],wait[2,0]][length>np.mean(rf[:,0])]
+
+            if real_tau-E.round_length_mus_to_x_multiple_ps(length,1)>0:
+                #print("adding ",real_tau-E.round_length_mus_to_x_multiple_ps(length,1))
+                wait_no_new_segment(mcas,real_tau-E.round_length_mus_to_x_multiple_ps(length,1))
+            else:
+                print("padding does not work at this tau")
+
     mw = seq.times_fields_aphi('mw')
     rf = seq.times_fields_aphi('rf')
     wait = seq.times_fields_aphi('wait')
+    #print("single tau ", real_tau, "actual tau", rf[:,0], "diff", rf[:,0]-real_tau)
+    if real_tau-rf[0:0]<0:
+        raise "some error to catch attention in ddrf, padding with 0s will not work"
+
+    #print("DDRF")
+    #print(mw)
+    #print(rf)
+
+    finish=False
+
+    print("-----real phase-----\n",rf[:, 2])
+    print(mw)
     
     for k, step in enumerate(seq.sequence_steps):
         idx = int(step[1]) - 1
+
+        #print("idx",idx,MW_phase_increment)
+        #print(step,mw[idx, 2])
         if step[0] == 'mw':  
             erabi(mcas,
                   freq=mw_freq,
                   length=mw[idx, 0],
                   amp=mw_amp,
-                  phase=mw[idx, 2] + global_mw_phase,)                
+                  phase=mw[idx, 2] + global_mw_phase+idx*MW_phase_increment,)
         elif step[0] == 'rf':
+
+            length=rf[idx, 0]
+            #print("rf idx",idx,MW_phase_increment)
+            multiplier=1
+            if measurements and measurements[0]==idx:
+                multiplier=measurements[1]
+                finish=True
+                padding=False
+
+            #print(multiplier)
             nrabi(mcas,
                   freq=rf_freq,
-                  length=rf[idx, 0],
+                  length=length*multiplier,
                   amp=rf_amp,
-                  phase=rf[idx, 2])
+                  phase=rf[idx, 2],
+                  real_tau=real_tau)
+
+        if finish:
+            #make final pi/2
+            #print("finishing at idx", idx, "with MW", mw[-1, 0], mw[-1, 2])
+            mcas.asc(length_mus = 0.128, gateMW = True, gateRF = False)
+            erabi(mcas,name="finishing pi/2",
+                              freq=mw_freq,
+                              length=mw[-1, 0],
+                              amp=mw_amp,
+                              phase=mw[-1, 2])
+            return
+
+                    
         if step[0] == 'wait':
             mcas.asc(length_mus = wait[idx,0], gateMW = True, gateRF = True)
+
 def sedor(mcas,
-          pi2_dur,
+          probe_pi2_dur,
           n_rep_sedor,
           sedort,
           total_tau,
@@ -3586,19 +4744,38 @@ def sedor(mcas,
           target_freq,
           target_amp,
           target_dur,
-          shutter = False
+          target_phase_shift = 0,
+          pi2_1 = True,
+          pi2_2 = False,
+          phi_1 = 0.0,
+          phi_2 = 0.0,
+          shutter = 'open'
           ):
-    rabi_period = pi2_dur * 4
-    pi2 = sc.Rabi(t_rabi=0.25 * rabi_period, omega=1 / rabi_period, phase=0.0, control_field='mw')
+    rabi_period = probe_pi2_dur * 4
+    pi2 = sc.Rabi(t_rabi=0.25 * rabi_period, omega=1 / rabi_period, phase=phi_1, control_field='mw')
+    pi2_phi = sc.Rabi(t_rabi=0.25 * rabi_period, omega=1 / rabi_period, phase=phi_2, control_field='mw')
     dd = sc.DD(dd_type='{}_{}'.format(n_rep_sedor, sedort), rabi_period=rabi_period, total_tau=total_tau)
-    seq = sc.Concatenated([pi2, dd], controls=['mw', 'wait'])
+
+    sequence = []
+    if pi2_1: # add first pi/2 if needed
+        sequence.append(pi2)
+    sequence.append(dd) # always add the dd which consists of taus and pi pulses
+    if pi2_2: # add final pi/2 if needed
+        sequence.append(pi2_phi)
+
+    if len(sequence)>1:
+        seq = sc.Concatenated(sequence, controls=['mw', 'wait'])
+    else:
+        seq = dd
     waveform_sedor(mcas,
                    seq,
                    probe_freq,
                    probe_amp,
+                   probe_pi2_dur,
                    target_freq,
                    target_amp,
                    target_dur,
+                   target_phase_shift,
                    total_tau,
                    shutter
                    )
@@ -3606,27 +4783,41 @@ def waveform_sedor(mcas,
                    seq,
                    probe_freq,
                    probe_amp,
+                   probe_pi2_dur,
                    target_freq,
                    target_amp,
                    target_dur,
+                   target_phase_shift,
                    total_tau,
                    shutter
                    ):
-    def nrabi(mcas, freq, length, amp, phase=0.0, shutter = False):
-        mcas.asc(
-            length_mus=E.round_length_mus_to_x_multiple_ps(length,1),
-            name='nuc',
-            gateRF = True,
-            shutter = shutter,
-            pd2g2={"type": "sinehermite_rf", "frequencies": [freq], "amplitudes": [amp], "phases": [np.rad2deg(phase)],
-                    "phase_offset_type": 'coherent'}
-        )
+    def nrabi(mcas, freq, length, amp, phase=0.0, shutter = 'open'):
+
+        if isinstance(freq, list):
+            mcas.asc(
+                length_mus=E.round_length_mus_to_x_multiple_ps(length,1),
+                name='nuc',
+                gateRF = True,
+                shutter = False if shutter == 'open' else True,
+                pd2g2={"type": "sinehermite_rf", "frequencies": freq, "amplitudes": amp, "phases": [np.rad2deg(phase)]*len(freq),
+                        "phase_offset_type": 'coherent'}
+            )
+        else:
+            mcas.asc(
+                length_mus=E.round_length_mus_to_x_multiple_ps(length,1),
+                name='nuc',
+                gateRF = True,
+                shutter = False if shutter == 'open' else True,
+                pd2g2={"type": "sinehermite_rf", "frequencies": [freq], "amplitudes": [amp], "phases": [np.rad2deg(phase)],
+                        "phase_offset_type": 'coherent'}
+            )
     mw = seq.times_fields_aphi('mw') # actually RF (originates from variable name constrains)
     wait = seq.times_fields_aphi('wait')
     
     end_time = mcas.length_mus + total_tau
-    
+    RF_opening_time = 80 #ms
     first_wait_done = False
+    shutter_ = True
     for k, step in enumerate(seq.sequence_steps):
         # open shutter when close to end of SEDOR
         idx = int(step[1]) - 1
@@ -3635,17 +4826,18 @@ def waveform_sedor(mcas,
         else:
             step_duration = wait[idx, 0]
         time_left_after_step = end_time - mcas.length_mus - step_duration
-        if time_left_after_step < 100000:
-            shutter = False
+        if ((time_left_after_step < 100000) and (shutter == 'opening')) or (shutter == 'open'):
+            shutter_ = False
         
         # SEDOR
+
         if step[0] == 'mw':
             nrabi(mcas,
                   freq=probe_freq,
                   length=mw[idx, 0],
                   amp=probe_amp,
                   phase=mw[idx, 2],
-                  shutter = shutter
+                  shutter = shutter_
                   )
         if step[0] == 'wait':
             if first_wait_done:
@@ -3653,59 +4845,410 @@ def waveform_sedor(mcas,
                       freq= target_freq,
                       length= target_dur,
                       amp= target_amp,
-                      phase = mw[idx, 2],
-                      shutter = shutter
+                      phase = mw[idx, 2]+target_phase_shift,
+                      shutter = shutter_
                       )
 
-                tau_wait = wait[idx, 0] - target_dur
+                tau_wait = wait[idx, 0] - target_dur - (2 * probe_pi2_dur)
             else:
-                tau_wait = wait[idx, 0]
-                
+                tau_wait = wait[idx, 0] - probe_pi2_dur/2
+
+            if tau_wait<0: # ie we will not do what we thik it should do
+                raise Exception(f"WARNING IN SEDOR!!!!! tau wait is negative! the measurement will not behave as you expect. try increasing total tau or use shorter pi pulses.\nwait={wait[idx, 0]},target_dur={ target_dur},2*probe_pi2_dur={2 * probe_pi2_dur} -> tau wait={tau_wait}. setting tau wait to 0")
+                tau_wait=0.0
+                #pass
+
             loops = int(tau_wait/1000)
             rest = tau_wait%1000
             if tau_wait != 0:
                 if loops  > 0:
                     mcas.start_new_segment('Tau', loop_count=loops)
-                    mcas.asc(length_mus=1000, shutter = shutter)
+                    mcas.asc(length_mus=1000, shutter = shutter_)
                 mcas.start_new_segment('TauRest', loop_count=1)
                 if rest - 0.512 > 0:
-                    mcas.asc(length_mus=rest - 0.512)  
-                    mcas.asc(length_mus=0.512, gateRF = True, shutter = shutter)
+                    mcas.asc(length_mus=rest - 0.512, shutter = shutter_)  
+                    mcas.asc(length_mus=0.512, gateRF = True, shutter = shutter_)
                 else:
-                    mcas.asc(length_mus=rest, gateRF = True, shutter = shutter)  
-            first_wait_done = True     
+                    mcas.asc(length_mus=rest, gateRF = True, shutter = shutter_)  
+            first_wait_done = True
 
 
 
 
+def get_hardcoded_si1_values(state, larmor):
+    #si1_freq = {'-3/2': 8.9920829,  '-1/2':4.1696871, '+1/2': 0.650141, '+3/2': 5.4666419}[state] #2086.7G
+    #si1_freq = {'-3/2': -8.885062,  '-1/2':-4.062826, '+1/2': 0.7567408, '+3/2': 5.572578}[state] #1960.6G
+    detuning =  {'-3/2': -7.22501493-0.0001508081074127082-2.084926823570443e-05+0.00013549502407628861, '-1/2':-2.40277893,  '+1/2': 2.41678787,  '+3/2': 7.23262507}[state]
+    si1_freq = detuning + larmor
 
+    #si1_freq =-14.564620373525031 #UNFUG
+    #si1_freq=11.115610807188204+0.26241352614382996+0.005076610870571051
 
-
-
-
-def get_hardcoded_si1_values(state):
-    si1_freq = {'m32': 8.9915829,  'm12':4.1691871, 'p12': 0.649641, 'p32': 5.4661419}[state]
     si1_amp = 0.9
-    si1_pi = {'m32': 15.275*0.882,  'm12':30.913, 'p12': 50, 'p32': 25.27}[state]
-    si1_pi2 = {'m32': 8.711*0.882,  'm12':16.549, 'p12': 25, 'p32': 14.407}[state]
-    si1_pi = si1_pi * 4
+    # si1_pi = {'-3/2': 56.4,  '-1/2': 119.3, '+1/2': 1097, '+3/2': 98.6}[state]
+    # si1_pi2 = {'-3/2': 29.3,  '-1/2':60.1, '+1/2': 514.6, '+3/2': 51.2}[state]
+    # si1_pi = {'-3/2': 61.06,  '-1/2': 130.56, '+1/2': 1020.95, '+3/2': 105.69}[state]
+    # si1_pi2 = {'-3/2': 32.77,  '-1/2':68.04, '+1/2': 515.29, '+3/2': 55.68}[state]
+
+    si1_pi = {'-3/2': 60.1,  '-1/2': 127.619, '+1/2': 1091.95, '+3/2': 105.484+4}[state] #was used for Si8 in -3/2
+    si1_pi2 = {'-3/2': 32.77-0.8,  '-1/2':68.04-0.9, '+1/2': 585.29, '+3/2': 55.68-1.9}[state]
+
+    #si1_pi = {'-3/2': 30.69,  '-1/2': 105.21, '+1/2': 545, '+3/2':78.04}[state] # for Si5 at 2050G
+    #si1_pi2 = {'-3/2': 16.484,  '-1/2':52.890, '+1/2': 585.29, '+3/2': 39.867}[state] # for Si5 at 2050G
+
+    # si1_pi = {'-3/2': 104,  '-1/2': 127.619, '+1/2': 1091.95, '+3/2': 105.484}[state]
+    # si1_pi2 = {'-3/2': 32.77,  '-1/2':68.04, '+1/2': 585.29, '+3/2': 55.68}[state]
     return si1_freq, si1_amp, si1_pi, si1_pi2
 
-def get_hardcoded_e_values_for_control(trans):
+def get_hardcoded_e_values_for_control(trans, pulseshape = 'sinehermite',tt=None,fast=False,middle=False):
     trans_idx = trans[-1]
-    amp = 0.95
-    if trans[0] == 'L':
-        e_pi = {'1': .278, '2': .278}[trans_idx] # '1' not calibrated
-        e_pi2 = {'1': .170, '2': .170}[trans_idx] # '1' not calibrated
-    if trans[0] == 'R':
-        e_pi = {'1': .502, '2': .468}[trans_idx]
-        e_pi2 = {'1': .28, '2': .263}[trans_idx]
+    # amp = 0.95
+    # if pulseshape == 'sinehermite':
+    #     if trans[0] == 'L':
+    #         e_pi = {'1': .458, '2': .458}[trans_idx]
+    #         e_pi2 = {'1': .245, '2': .245}[trans_idx]
+    #     elif trans[0] == 'C':
+    #         e_pi = {'1': .263, '2': .263}[trans_idx]
+    #         e_pi2 = {'1': .17, '2': .17}[trans_idx]
+    #     elif trans[0] == 'R':
+    #         e_pi = {'1': .197, '2': .197}[trans_idx]
+    #         e_pi2 = {'1': .13, '2': .13}[trans_idx]
+    # elif pulseshape == 'sine':
+    #     if trans[0] == 'L':
+    #         e_pi = {'1': .296, '2': .315}[trans_idx]
+    #         e_pi2 = {'1': .146, '2': .154}[trans_idx]
+    #     elif trans[0] == 'C':
+    #         e_pi = {'1': .300, '2': .293}[trans_idx]
+    #         e_pi2 = {'1': .170, '2': .182}[trans_idx]
+    #     elif trans[0] == 'R':
+    #         e_pi = {'1': .178, '2': .153}[trans_idx]
+    #         e_pi2 = {'1': .094, '2': .078}[trans_idx]
+
+    #at 1962G
+    # amp = 0.9
+    # if pulseshape == 'sinehermite':
+    #     if trans[0] == 'L':
+    #         e_pi = {'1': .482, '2': .466}[trans_idx]
+    #         e_pi2 = {'1': .273, '2': .267}[trans_idx]
+    #     elif trans[0] == 'C':
+    #         e_pi = {'1': .296, '2': .272}[trans_idx]
+    #         e_pi2 = {'1': .183, '2': .167}[trans_idx]
+    #     elif trans[0] == 'R':
+    #         e_pi = {'1': .225, '2': .2}[trans_idx]
+    #         e_pi2 = {'1': .144, '2': .129}[trans_idx]
+    # elif pulseshape == 'sine':
+    #     if trans[0] == 'L':
+    #         e_pi = {'1': .296, '2': .315}[trans_idx]
+    #         e_pi2 = {'1': .146, '2': .154}[trans_idx]
+    #     elif trans[0] == 'C':
+    #         e_pi = {'1': .300, '2': .293}[trans_idx]
+    #         e_pi2 = {'1': .170, '2': .182}[trans_idx]
+    #     elif trans[0] == 'R':
+    #         e_pi = {'1': .178, '2': .153}[trans_idx]
+    #         e_pi2 = {'1': .094, '2': .078}[trans_idx]
+
+    # if not tt:
+    #     if not fast:
+    #         if pulseshape == 'sinehermite':
+    #             if trans[0] == 'L':
+    #                 amp=0.215
+    #                 e_pi = {'1': .259, '2': .242}[trans_idx]
+    #                 e_pi2 = {'1': .156, '2': .150}[trans_idx]
+    #             elif trans[0] == 'C':
+    #                 amp=0.360 #uncalibrated
+    #                 e_pi = {'1': .296, '2': .272}[trans_idx]
+    #                 e_pi2 = {'1': .183, '2': .167}[trans_idx]
+    #             elif trans[0] == 'R':
+    #                 amp=0.360
+    #                 e_pi = {'1': .253, '2': .251}[trans_idx]
+    #                 e_pi2 = {'1': .162, '2': .159}[trans_idx]
+    #         elif pulseshape == 'sine': #uncalibrated
+    #             if trans[0] == 'L':
+    #                 e_pi = {'1': .296, '2': .315}[trans_idx]
+    #                 e_pi2 = {'1': .146, '2': .154}[trans_idx]
+    #             elif trans[0] == 'C':
+    #                 e_pi = {'1': .300, '2': .293}[trans_idx]
+    #                 e_pi2 = {'1': .170, '2': .182}[trans_idx]
+    #             elif trans[0] == 'R':
+    #                 e_pi = {'1': .178, '2': .153}[trans_idx]
+    #                 e_pi2 = {'1': .094, '2': .078}[trans_idx]
+
+    #     if fast:
+    #         amp=1.
+    #         if pulseshape == 'sinehermite':
+    #             if trans[0] == 'L':
+    #                 e_pi = {'1': .086, '2': .082}[trans_idx]
+    #                 e_pi2 = {'1': .044, '2': .043}[trans_idx]
+    #             elif trans[0] == 'C':
+    #                 amp=1 #uncalibrated
+    #                 e_pi = {'1': .296, '2': .272}[trans_idx]
+    #                 e_pi2 = {'1': .073, '2': .073}[trans_idx]
+    #             elif trans[0] == 'R':
+    #                 e_pi = {'1': .135, '2': .135}[trans_idx]
+    #                 e_pi2 = {'1': .073, '2': .069}[trans_idx]
+    #         elif pulseshape == 'sine': #2 is uncalibrated
+    #             if trans[0] == 'L':
+    #                 e_pi = {'1': 0.043, '2': 0.043}[trans_idx]
+    #                 e_pi2 = {'1': 0.021, '2': 0.021}[trans_idx]
+    #             elif trans[0] == 'C':
+    #                 e_pi = {'1': .300, '2': .293}[trans_idx]
+    #                 e_pi2 = {'1': .170, '2': .182}[trans_idx]
+    #             elif trans[0] == 'R':
+    #                 e_pi = {'1': 0.071, '2': 0.071}[trans_idx]
+    #                 e_pi2 = {'1': 0.035, '2': 0.035}[trans_idx]
+
+    #     if middle: 
+    #         amp=1.
+    #         if pulseshape == 'sinehermite':
+    #             if trans[0] == 'L':
+    #                 e_pi = {'1': .070, '2': .072}[trans_idx]
+    #                 e_pi2 = {'1': .045, '2': .043}[trans_idx]
+    #             elif trans[0] == 'C':
+    #                 amp=1 #uncalibrated
+    #                 e_pi = {'1': .296, '2': .272}[trans_idx]
+    #                 e_pi2 = {'1': .073, '2': .073}[trans_idx]
+    #             elif trans[0] == 'R':
+    #                 e_pi = {'1': .102, '2': .090}[trans_idx]
+    #                 e_pi2 = {'1': .075, '2': .073}[trans_idx]
+
+    #         elif pulseshape == 'sine': #2 is uncalibrated
+    #             if trans[0] == 'L':
+    #                 e_pi = {'1': 0.043, '2': 0.043}[trans_idx]
+    #                 e_pi2 = {'1': 0.021, '2': 0.021}[trans_idx]
+    #             elif trans[0] == 'C':
+    #                 e_pi = {'1': .300, '2': .293}[trans_idx]
+    #                 e_pi2 = {'1': .170, '2': .182}[trans_idx]
+    #             elif trans[0] == 'R':
+    #                 e_pi = {'1': 0.071, '2': 0.071}[trans_idx]
+    #                 e_pi2 = {'1': 0.035, '2': 0.035}[trans_idx]
+
+    # else:
+    #     if "L" in trans:
+    #         amp=0.215
+    #     elif "R" in trans:
+    #         amp=0.360
+    #     elif "C" in trans: 
+    #         amp=0.360 #uncalibrated!!!!!
+        
+    #     e_pi = tt.RP('e_rabi_ou350deg-90-'+trans, amp=amp).pi
+    #     e_pi2 = tt.RP('e_rabi_ou350deg-90-'+trans, amp=amp).pi2
+
+    #### at 1730G rouven amplifier
+    # if pulseshape == 'sinehermite':
+    #             if trans[0] == 'L':
+    #                 amp=1
+    #                 e_pi = {'1': .400, '2': .400}[trans_idx]
+    #                 e_pi2 = {'1': .180, '2': .180}[trans_idx]
+    #             elif trans[0] == 'C':
+    #                 amp=1 #uncalibrated
+    #                 e_pi = {'1': .296, '2': .272}[trans_idx]
+    #                 e_pi2 = {'1': .183, '2': .167}[trans_idx]
+    #             elif trans[0] == 'R':
+    #                 amp=1
+    #                 e_pi = {'1': .16, '2': .16}[trans_idx]
+    #                 e_pi2 = {'1': .082, '2': .082}[trans_idx]
+
+    if not tt:
+        if not fast:
+            if pulseshape == 'sinehermite':
+                if trans[0] == 'L':
+                    amp=0.215
+                    e_pi = {'1': .259, '2': .242}[trans_idx]
+                    e_pi2 = {'1': .156, '2': .150}[trans_idx]
+                elif trans[0] == 'C':
+                    amp=0.360 #uncalibrated
+                    e_pi = {'1': .296, '2': .272}[trans_idx]
+                    e_pi2 = {'1': .183, '2': .167}[trans_idx]
+                elif trans[0] == 'R':
+                    amp=0.360
+                    e_pi = {'1': .253, '2': .251}[trans_idx]
+                    e_pi2 = {'1': .162, '2': .159}[trans_idx]
+            elif pulseshape == 'sine': #uncalibrated
+                if trans[0] == 'L':
+                    e_pi = {'1': .296, '2': .315}[trans_idx]
+                    e_pi2 = {'1': .146, '2': .154}[trans_idx]
+                elif trans[0] == 'C':
+                    e_pi = {'1': .300, '2': .293}[trans_idx]
+                    e_pi2 = {'1': .170, '2': .182}[trans_idx]
+                elif trans[0] == 'R':
+                    e_pi = {'1': .178, '2': .153}[trans_idx]
+                    e_pi2 = {'1': .094, '2': .078}[trans_idx]
+
+        if fast:
+            amp=1.
+            if pulseshape == 'sinehermite':
+                if trans[0] == 'L':
+                    # usedf on Si8MHz
+                    # e_pi = {'1': .122, '2': .080}[trans_idx]
+                    # e_pi2 = {'1': .057, '2': .039}[trans_idx] #+4 ns ?
+
+                    # used on Si5
+                    #e_pi = {'1': .085, '2': .080}[trans_idx]
+                    #e_pi2 = {'1': .040, '2': .039}[trans_idx] #+4 ns ?
+
+                    e_pi = {'1': .113, '2': .110}[trans_idx]
+                    e_pi2 = {'1': .059, '2': .053}[trans_idx] #+4 ns ?
+                    # e_pi = {'1': .133, '2': .110}[trans_idx]
+                    # e_pi2 = {'1': .064, '2': .053}[trans_idx] #+4 ns ?
+
+                    # e_pi = {'1': .096, '2': .096}[trans_idx]
+                    # e_pi2 = {'1': .045, '2': .044}[trans_idx] #+4 ns ?
+                    #e_pi = {'1': .088, '2': .088}[trans_idx]
+                    #e_pi2 = {'1': .045*88/96, '2': .044*88/96}[trans_idx] #+4 ns ?
+
+                    #e_pi = {'1': .140, '2': .140}[trans_idx]
+                    #e_pi2 = {'1': .075, '2': .075}[trans_idx] #+4 ns ?
+
+                    #from trying to optimize the pi pulses
+                    # e_pi = {'1': .087, '2': .082}[trans_idx] #+2ns
+                    # e_pi2 = {'1': .041, '2': .040}[trans_idx] 
+                    # amp=amp-0.02
+
+                elif trans[0] == 'C':
+                    amp=1 #uncalibrated
+                    e_pi = {'1': .150, '2': .150}[trans_idx]
+                    e_pi2 = {'1': .113, '2': .083}[trans_idx]
+                elif trans[0] == 'R':
+                    e_pi = {'1': .156, '2': .156}[trans_idx]
+                    e_pi2 = {'1': .092, '2': .092}[trans_idx]
+
+                    #e_pi = {'1': .149, '2': .149}[trans_idx]
+                    #e_pi2 = {'1': .082, '2': .082}[trans_idx]
+
+                    e_pi = {'1': .158, '2': .158}[trans_idx]
+                    e_pi2 = {'1': .094, '2': .094}[trans_idx]
+
+
+            elif pulseshape == 'sine': #2 is uncalibrated
+                if trans[0] == 'L':
+                    e_pi = {'1': 0.043, '2': 0.043}[trans_idx]
+                    e_pi2 = {'1': 0.021, '2': 0.021}[trans_idx]
+                elif trans[0] == 'C':
+                    e_pi = {'1': .300, '2': .293}[trans_idx]
+                    e_pi2 = {'1': .170, '2': .182}[trans_idx]
+                elif trans[0] == 'R':
+                    e_pi = {'1': 0.071, '2': 0.071}[trans_idx]
+                    e_pi2 = {'1': 0.035, '2': 0.035}[trans_idx]
+
+        if middle: 
+            amp=1.
+            if pulseshape == 'sinehermite':
+                if trans[0] == 'L':
+                    e_pi = {'1': .070, '2': .072}[trans_idx]
+                    e_pi2 = {'1': .045, '2': .043}[trans_idx]
+                elif trans[0] == 'C':
+                    amp=1 #uncalibrated
+                    e_pi = {'1': .296, '2': .272}[trans_idx]
+                    e_pi2 = {'1': .073, '2': .073}[trans_idx]
+                elif trans[0] == 'R':
+                    e_pi = {'1': .102, '2': .090}[trans_idx]
+                    e_pi2 = {'1': .075, '2': .073}[trans_idx]
+
+            elif pulseshape == 'sine': #2 is uncalibrated
+                if trans[0] == 'L':
+                    e_pi = {'1': 0.043, '2': 0.043}[trans_idx]
+                    e_pi2 = {'1': 0.021, '2': 0.021}[trans_idx]
+                elif trans[0] == 'C':
+                    e_pi = {'1': .300, '2': .293}[trans_idx]
+                    e_pi2 = {'1': .170, '2': .182}[trans_idx]
+                elif trans[0] == 'R':
+                    e_pi = {'1': 0.071, '2': 0.071}[trans_idx]
+                    e_pi2 = {'1': 0.035, '2': 0.035}[trans_idx]
+
+    else:
+        if "L" in trans:
+            amp=0.215
+        elif "R" in trans:
+            amp=0.360
+        elif "C" in trans: 
+            amp=0.360 #uncalibrated!!!!!
+        
+        e_pi = tt.RP('e_rabi_ou350deg-90-'+trans, amp=amp).pi
+        e_pi2 = tt.RP('e_rabi_ou350deg-90-'+trans, amp=amp).pi2
+
+
     return amp, e_pi, e_pi2
 
-def get_hardcoded_e_values_for_readout(trans_idx):
-    R_amp = 0.95
-    L_amp = {'1': .408, '2': .486}[trans_idx] # for pi flip within 468ns.
-    e_pi = {'1': .502, '2': .468}[trans_idx]
-    e_pi2 = {'1': .28, '2': .263}[trans_idx]
+
+def get_hardcoded_e_values_for_readout(trans_idx,weak=False):
+    #### at 1962G
+    # if not weak:
+    #     L_amp = 0.90
+    #     C_amp = {'1': .5, '2': .5}[trans_idx] # for pi flip within 468ns.
+    #     R_amp = {'1': .327, '2': .327}[trans_idx] # for pi flip within 468ns.
+    #     e_pi = {'1': .458, '2': .458}[trans_idx]
+    #     e_pi2 = {'1': .245, '2': .245}[trans_idx]
+    # else:
+    #     L_amp = 0.70
+    #     C_amp = {'1': .5, '2': .5}[trans_idx] # for pi flip within 468ns.
+    #     R_amp = {'1': 0.27678, '2': .250}[trans_idx] # for pi flip within 468ns.
+    #     e_pi = {'1': 0.597, '2': .564}[trans_idx]
+    #     e_pi2 = {'1': 0.333, '2': .313}[trans_idx]
+
+    #### at 2048G
+    # if not weak:
+    #     L_amp = 0.90
+    #     C_amp = {'1': .5, '2': .5}[trans_idx] # for pi flip within 468ns.
+    #     R_amp = {'1': .9*46/73, '2': .9*46/73}[trans_idx] # for pi flip within 73 ns.
+    #     e_pi = {'1': .073, '2': .073}[trans_idx]
+    #     e_pi2 = {'1': .036, '2': .036}[trans_idx]
+    # else:
+
+    #### rouven amp at 2048 G
+    # L_amp = 0.0955 #0.15*.230/0.422*1.2
+    # C_amp = {'1': .5, '2': .5}[trans_idx] # for pi flip within 468ns.
+    # R_amp = {'1': 0.15, '2': 0.15}[trans_idx]*1.2 # for pi flip within 468ns.
+    # e_pi = {'1': 0.422, '2': 0.422}[trans_idx]
+    # e_pi2 = {'1': 0.422/2, '2': 0.422/2}[trans_idx]
+
+
+    L_amp = 0.126 #0.15*.230/0.422*1.2
+    C_amp = {'1': .5, '2': .5}[trans_idx] # for pi flip within 468ns.
+    R_amp = {'1': 0.206, '2': 0.206}[trans_idx]*1.2 # for pi flip within 468ns.
+    e_pi = {'1': 0.422, '2': 0.422}[trans_idx]
+    e_pi2 = {'1': 0.422/2, '2': 0.422/2}[trans_idx]
+
+    # # 8MHZ at 2050 G
+    # if not weak:
+    #     L_amp = 0.90
+    #     C_amp = {'1': .5, '2': .5}[trans_idx] # for pi flip within 468ns.
+    #     R_amp = {'1': .9*46/73, '2': .9*46/73}[trans_idx] # for pi flip within 73 ns.
+    #     e_pi = {'1': .073, '2': .073}[trans_idx]
+    #     e_pi2 = {'1': .036, '2': .036}[trans_idx]
+    # else:
+    #     L_amp = 0.2 #0.15*.230/0.422*1.2
+    #     C_amp = {'1': .5, '2': .5}[trans_idx] # for pi flip within 468ns.
+    #     R_amp = {'1': 0.4, '2': 0.4}[trans_idx] # for pi flip within 468ns.
+    #     e_pi = {'1': 0.33, '2': 0.33}[trans_idx]
+    #     e_pi2 = {'1': 0.422/2, '2': 0.422/2}[trans_idx]
+
+    #### at 1730G rouven amplifier
+    # if not weak:
+    #     L_amp = 0.90
+    #     C_amp = {'1': .5, '2': .5}[trans_idx] # for pi flip within 468ns.
+    #     R_amp = {'1': .9*46/73, '2': .9*46/73}[trans_idx] # for pi flip within 73 ns.
+    #     e_pi = {'1': .073, '2': .073}[trans_idx]
+    #     e_pi2 = {'1': .036, '2': .036}[trans_idx]
+
+    # else:
+    #     R_amp = 0.232 #0.15*.230/0.422*1.2
+    #     C_amp = {'1': 0.2155, '2': 0.2155}[trans_idx] # for pi flip within 468ns.
+    #     L_amp = {'1': 0.966, '2': 0.966}[trans_idx] # for pi flip within 468ns.
+    #     e_pi = {'1': 0.422, '2': 0.422}[trans_idx]
+    #     e_pi2 = {'1': 0.422/2, '2': 0.422/2}[trans_idx]
+
+    # else:
+    #     L_amp = 0.09534 #0.15*.230/0.422*1.2
+    #     C_amp = {'1': 0.2155, '2': 0.2155}[trans_idx] # for pi flip within 468ns.
+    #     R_amp = {'1': 0.2155, '2': 0.2155}[trans_idx] # for pi flip within 468ns.
+    #     e_pi = {'1': 0.422, '2': 0.422}[trans_idx]
+    #     e_pi2 = {'1': 0.422/2, '2': 0.422/2}[trans_idx]
+
+    # L_amp = 0.95
+    # R_amp = {'1': .925, '2': .925}[trans_idx] # for pi flip within 468ns.
+    # e_pi = {'1': .314, '2': .314}[trans_idx]
+    # e_pi2 = {'1': .186, '2': .186}[trans_idx]
+
+    
     return R_amp, L_amp, e_pi, e_pi2
             

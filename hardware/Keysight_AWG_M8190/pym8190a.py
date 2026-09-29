@@ -207,6 +207,9 @@ class MultiChSeq:
 
     def add_step_complete(self, **kwargs):
         pd = {}
+        if (kwargs.get("A2",False) or kwargs.get("A1",False)) and kwargs.get("laser",True):
+            kwargs.update({"laser":True}) #UNFUG ?
+
         for awg_str, chl in self.ch_dict.items():
             pd[awg_str] = {}
             for ch in chl:
@@ -493,6 +496,7 @@ def stop_awgs(awgs, ch_dict=None):
     ch_dict = settings.ch_dict_full if ch_dict is None else ch_dict
     for awg_str, channels in ch_dict.items():
         awgs[awg_str].run = False
+    awgs["ps"].Night() #stops the ps if it was running # safety because the setupcontrol and lasersacnner might be running stuff directly on the ps
 
 def update(d, u):
     for k, v in u.iteritems():
