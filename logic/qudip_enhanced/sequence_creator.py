@@ -619,6 +619,132 @@ class DDAlpha(Arbitrary):
         return getattr(self, '_times_full', out)
 
 
+class DD_adapted_tau(Arbitrary):
+    def __init__(self, dd_type, pi_dur, pi2_dur=None, time_digitization=None, phase=0.0, **kwargs):
+        self.dd_type = dd_type
+        self.pi_dur = pi_dur
+        self.pi2_dur = pi2_dur   # optional: duration of pi/2 pulses directly before/after the DD block
+        self.phase = phase # overall phase offset
+        self.time_digitization = time_digitization
+        self.set_total_tau(**kwargs)
+
+    column_dict = collections.OrderedDict([('mw', [0, 1]), ('wait', [2])])
+
+    @property
+    def rabi_period(self):
+        return 2 * self.pi_dur
+
+    @property
+    def sequence(self):
+        if self.number_of_pi_pulses == 0:
+            out = ['wait'] + ['wait']
+        else:
+            out = list(np.insert(['wait'] * self.n_wait, range(1, self.n_wait), [['mw'] * self.number_of_pi_pulses]))
+
+        return getattr(self, '_sequence', [[i] for i in out])
+
+    def mw_array_xy(self):
+        rho, azim = tuple(np.hsplit(self.mw_array_aphi(), 2))
+        x, y, z = coordinates.sph2cart(rho, 0, azim)
+        return np.concatenate([x, y], axis=1)
+
+    def mw_array_aphi(self):
+        rho = np.ones([self.number_of_pi_pulses]) / self.rabi_period
+        return np.vstack([rho, self.phases]).T
+
+    @property
+    def fields_full(self):
+        out = np.zeros((len(self.sequence), self.n_columns))
+        mw_array = self.mw_array_xy()
+        idxmw = 0
+        for i, val in enumerate(self.sequence):
+            if 'mw' in val:
+                out[i, self.column_dict['mw']] = mw_array[idxmw]
+                idxmw += 1
+        return getattr(self, '_fields_full', out)
+
+    @property
+    def times_full(self):
+        wait = self.effective_durations_dd
+        if self.number_of_pi_pulses == 0:
+            out = wait
+        else:
+            out = np.insert(wait, range(1, len(wait)), [[self.pi_dur] * self.number_of_pi_pulses])
+        return getattr(self, '_times_full', out)
+
+    @property
+    def phases(self):
+        name = self.dd_type
+        if name[-6:] == '_uhrig' in name:
+            name = name[:-6]
+        return np.array(__PHASES_DD__[name]) + self.phase
+
+    @property
+    def n_wait(self):
+        if self.number_of_pi_pulses == 0:
+            return 2
+        else:
+            return self.number_of_pi_pulses + 1
+
+    @property
+    def n_tau(self):
+        return self.n_wait - 1
+
+    def set_total_tau(self, **kwargs):
+        if self.dd_type[-6:] == '_uhrig':
+            return kwargs['total_tau']
+        else:
+            if 'tau' in kwargs and kwargs['tau'] is not None:
+                tau = kwargs['tau']
+            else:
+                tau = kwargs['total_tau'] / self.n_tau
+        if self.time_digitization is not None:
+            tau = 2 * np.around((tau / 2.) / self.time_digitization) * self.time_digitization
+        self.total_tau = self.n_tau * tau
+
+    def tau_list(self):
+        name = self.dd_type
+        if name[-6:] == '_uhrig' in name:
+            return self.uhrig_taus
+        else:
+            tau = self.total_tau / self.n_tau
+            return np.array([tau / 2.] + [tau for _ in range(self.number_of_pi_pulses - 1)] + [tau / 2.])
+
+    @property
+    def number_of_pi_pulses(self):
+        return len(self.phases)
+
+    @property
+    def eff_pulse_dur_waiting_time(self):
+        """
+        Time that has to be removed from each centre-to-centre spacing in tau_list()
+        so that the pulse centres (not the pulse edges) are separated by tau_list().
+        Half of every adjacent pulse lies inside the spacing.
+        Order: [first wait, wait between pi_1/pi_2, ..., last wait]
+        """
+        n = self.number_of_pi_pulses
+        if n == 0:
+            return np.zeros(2)
+        edge = 0.5 * self.pi_dur
+        if self.pi2_dur is not None:          # pi/2 pulse sitting outside the DD block
+            edge += 0.5 * self.pi2_dur
+        return np.array([edge] + [self.pi_dur] * (n - 1) + [edge])
+
+    @property
+    def minimum_total_tau(self):
+        # smallest total_tau for which no wait becomes negative
+        return float(np.max(self.eff_pulse_dur_waiting_time / (self.tau_list() / self.total_tau)))
+
+    @property
+    def effective_durations_dd(self):
+        wait = self.tau_list() - self.eff_pulse_dur_waiting_time
+        if np.any(wait < 0):
+            raise Exception('Waiting times smaller than zero are not allowed. '
+                            'Total tau must be at least {} (current: {})'.format(
+                                self.minimum_total_tau, self.total_tau))
+        return wait
+
+
 class DD(Arbitrary):
     def __init__(self, dd_type=None, rabi_period=None, time_digitization=None, phase=0.0, **kwargs):
         self.dd_type = dd_type

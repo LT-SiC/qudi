@@ -5086,7 +5086,7 @@ def get_hardcoded_e_values_for_control(trans, pulseshape = 'sinehermite',tt=None
                     #e_pi = {'1': .085, '2': .080}[trans_idx]
                     #e_pi2 = {'1': .040, '2': .039}[trans_idx] #+4 ns ?
 
-                    e_pi = {'1': .113, '2': .110}[trans_idx]
+                    e_pi = {'1': .118, '2': .115}[trans_idx]
                     e_pi2 = {'1': .059, '2': .053}[trans_idx] #+4 ns ?
                     # e_pi = {'1': .133, '2': .110}[trans_idx]
                     # e_pi2 = {'1': .064, '2': .053}[trans_idx] #+4 ns ?
@@ -5115,7 +5115,7 @@ def get_hardcoded_e_values_for_control(trans, pulseshape = 'sinehermite',tt=None
                     #e_pi = {'1': .149, '2': .149}[trans_idx]
                     #e_pi2 = {'1': .082, '2': .082}[trans_idx]
 
-                    e_pi = {'1': .158, '2': .158}[trans_idx]
+                    e_pi = {'1': .133, '2': .133}[trans_idx]
                     e_pi2 = {'1': .094, '2': .094}[trans_idx]
 
 

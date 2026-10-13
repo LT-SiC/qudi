@@ -2,7 +2,9 @@
 
 import os
 
-os.environ["QT_PLUGIN_PATH"] = r"C:\Users\User\anaconda3\Library\plugins"
+_QT_PLUGIN_DIR = r"C:\Users\User\anaconda3\Library\plugins"
+if os.path.isdir(_QT_PLUGIN_DIR):  # only override when the folder really exists
+    os.environ["QT_PLUGIN_PATH"] = _QT_PLUGIN_DIR
 
 import re
 import ast
@@ -33,9 +35,11 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QPlainTextEdit, QInputDialog, QMessageBox,QMenu
 )
 from PyQt5.QtGui import QStandardItemModel, QStandardItem, QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QPalette, QPixmap,QIcon,QKeySequence
-from PyQt5.QtCore import Qt, QRegExp,Signal
+from PyQt5.QtCore import Qt, QRegExp, pyqtSignal as Signal  # PyQt5 has no "Signal", only "pyqtSignal"
 
 from astropy.timeseries import LombScargle
+from scipy.special import gamma as _scipy_gamma
+from PyQt5.QtWidgets import QDialog
 
 sns.set_context("paper")
 sns.set(font_scale=1, style='white')
@@ -68,13 +72,16 @@ class TabWidget(QTabWidget):
 
         # Create the context menu
         menu = QMenu(self)
+        copy_name_action = menu.addAction("Copy tab name")
         delete_action = menu.addAction("Delete Tab")
         # Map the local position to global screen coordinates
         global_pos = self.tabBar().mapToGlobal(pos)
         action = menu.exec_(global_pos)
 
+        if action == copy_name_action:
+            QApplication.clipboard().setText(self.tabText(tab_index))
         # If the delete action was triggered, remove the tab
-        if action == delete_action:
+        elif action == delete_action:
             self.removeTab(tab_index)
 
 class EnhancedTable(QTableWidget):
@@ -96,6 +103,87 @@ class EnhancedTable(QTableWidget):
                 super().keyPressEvent(event)
         else:
             super().keyPressEvent(event)
+
+
+def convert_cell_text(dtype, text):
+    """Convert the text of a table cell back to the dtype of its dataframe column.
+    np.bool_("False") is True, so booleans need special handling."""
+    try:
+        if np.issubdtype(dtype, np.bool_):
+            return np.bool_(str(text).strip().lower() in ("true", "1", "1.0"))
+    except TypeError:
+        pass
+    return dtype.type(text)
+
+
+class CopyableTable(QTableWidget):
+    """Read-only table whose selection can be copied (Ctrl+C) as tab separated text."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+    def _text_of(self, rows, cols):
+        lines = []
+        for r in rows:
+            cells = []
+            for c in cols:
+                item = self.item(r, c)
+                cells.append(item.text() if item else "")
+            lines.append("\t".join(cells))
+        return "\n".join(lines)
+
+    def header_text(self):
+        return "\t".join(self.horizontalHeaderItem(c).text() for c in range(self.columnCount()))
+
+    def all_text(self, header=True):
+        body = self._text_of(range(self.rowCount()), range(self.columnCount()))
+        return (self.header_text() + "\n" + body) if header else body
+
+    def selection_text(self):
+        ranges = self.selectedRanges()
+        if not ranges:
+            return self.all_text()
+        rows = sorted({r for rg in ranges for r in range(rg.topRow(), rg.bottomRow() + 1)})
+        cols = sorted({c for rg in ranges for c in range(rg.leftColumn(), rg.rightColumn() + 1)})
+        return self._text_of(rows, cols)
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.Copy):
+            QApplication.clipboard().setText(self.selection_text())
+        else:
+            super().keyPressEvent(event)
+
+
+class LineStatsDialog(QDialog):
+    """Shows the x,y values of min / max / mean of every plotted line (copyable)."""
+    HEADERS = ["Subplot", "Line", "Kind", "Stat", "x", "y", "z"]
+
+    def __init__(self, rows, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Min / Max / Mean of the plotted lines")
+        self.resize(900, 500)
+        layout = QVBoxLayout(self)
+
+        self.table = CopyableTable()
+        self.table.setColumnCount(len(self.HEADERS))
+        self.table.setHorizontalHeaderLabels(self.HEADERS)
+        self.table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row):
+                self.table.setItem(r, c, QTableWidgetItem(str(value)))
+        self.table.resizeColumnsToContents()
+        layout.addWidget(self.table)
+
+        buttons = QHBoxLayout()
+        copy_sel = QPushButton("Copy selection (Ctrl+C)")
+        copy_sel.clicked.connect(lambda: QApplication.clipboard().setText(self.table.selection_text()))
+        copy_all = QPushButton("Copy all")
+        copy_all.clicked.connect(lambda: QApplication.clipboard().setText(self.table.all_text()))
+        buttons.addWidget(copy_sel)
+        buttons.addWidget(copy_all)
+        layout.addLayout(buttons)
 
 
 class SQLiteHistoryManager:
@@ -192,8 +280,8 @@ class SQLiteHistoryManager:
 
 class NonLazyFileModel(QStandardItemModel):
     def __init__(self, root_path,progress_bar, parent=None):
-        self.progress_bar = progress_bar
         super().__init__(parent)
+        self.progress_bar = progress_bar
         self.setHorizontalHeaderLabels(['Name'])  # Only one column for Name
         self.load_directory(root_path)
 
@@ -202,29 +290,33 @@ class NonLazyFileModel(QStandardItemModel):
         Load the entire directory structure starting from `root_path`.
         """
         root_item = self.invisibleRootItem()
-        self._add_items(root_item, root_path)
+        self.progress_bar.setRange(0, 0)  # busy indicator while scanning
+        try:
+            self._add_items(root_item, root_path)
+        finally:
+            self.progress_bar.setRange(0, 100)
 
     def _add_items(self, parent_item, path):
         """
         Recursively add directory and file items to the model.
         """
-        self.progress_bar.setRange(0, 0)
         try:
+            entries = sorted(os.scandir(path), key=lambda e: e.name)
+        except OSError:
+            return  # Skip directories without access / that do not exist
 
-            for entry in os.scandir(path):
-                item = QStandardItem(entry.name)
-                item.setEditable(False)
-                item.setData(entry.path, Qt.UserRole)  # Store the full path
-                parent_item.appendRow(item)
+        for entry in entries:
+            item = QStandardItem(entry.name)
+            item.setEditable(False)
+            item.setData(entry.path, Qt.UserRole)  # Store the full path
+            parent_item.appendRow(item)
 
-                if entry.is_dir():
-                    # Add a child row for directories
-                    self._add_items(item, entry.path)
-
-        except PermissionError:
-            pass  # Skip directories without access
-
-        self.progress_bar.setRange(0, 100)
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)  # avoids endless symlink loops
+            except OSError:
+                is_dir = False
+            if is_dir:
+                self._add_items(item, entry.path)
 
 def parse_parameters(expression):
     """
@@ -344,17 +436,27 @@ class FitManager:
         self.predefined_functions = {}
         self.fit_parameters={}
         self.lines=[]
-        self.functions={"np":np} #this will be the globals when trying to exec the function
+        self.functions={"np":np,"gamma":_scipy_gamma} #this will be the globals when trying to exec the function
+        self._protected_names={"np","gamma"} # fit functions with these names must not shadow the globals above
 
         if os.path.isfile("fit_functions.txt"):
-            fi=open("fit_functions.txt","r")
-            self.lines=fi.readlines()
-            fi.close()
+            with open("fit_functions.txt","r") as fi:
+                self.lines=fi.readlines()
             for line in self.lines:
-                arguments=line[:-1].split("|")
-                self.add_fit_function(*arguments,save=False)
+                parts=line.rstrip("\n").split("|")
+                if len(parts)<2:
+                    continue
+                # an expression may itself contain "|" -> name is first, display name last
+                if len(parts)>=3:
+                    arguments=[parts[0],"|".join(parts[1:-1]),parts[-1]]
+                else:
+                    arguments=parts
+                try:
+                    self.add_fit_function(*arguments,save=False)
+                except Exception as e:
+                    print(f"could not load fit function '{parts[0]}':",e)
 
-        else:
+        if not self.fits: # no (valid) saved functions -> use the defaults
             self.add_fit_function("sine", "a * np.sin(b * x + phi) + c")
             self.add_fit_function("cosine", "a * np.cos(b * x + phi) + c")
             self.add_fit_function("exp_decay", "d * np.exp(-e * x)")
@@ -467,46 +569,6 @@ class FitManager:
             total_period = float(x[-1] - x[0])
             return 1.0 / total_period if total_period > 0 else 0.0
         return peak_freq
-
-    def _estimate_damped_sine_params(self,x, y, force_undamped_if_sparse=True):
-        """
-        Schätzt (a, b, c, d, offset) für
-        a * exp(-b*x) * sin(c*x + d) + offset
-        - c: angular frequency (rad/unit)
-        - b: decay-rate (>=0)
-        force_undamped_if_sparse: setzt b=0 falls sehr wenige Punkte (<6)
-        """
-        x = np.asarray(x)
-        y = np.asarray(y)
-        N = x.size
-        if N < 3:
-            a = float((np.nanmax(y) - np.nanmin(y)) / 2.0) if y.size > 0 else 1.0
-            c = 2.0 * np.pi / (float(x[-1] - x[0]) + 1e-12) if x.size > 1 else 1.0
-            return {"a": a, "b": 0.0, "c": c, "d": 0.0, "offset": float(np.nanmean(y))}
-
-        offset = float(np.nanmean(y))
-        y_centered = y - offset
-        f = self._fft_peak_frequency(x, y_centered)
-        c = 2.0 * np.pi * f if f > 0 else 2.0 * np.pi / (float(x[-1] - x[0]) + 1e-12)
-        a, phi, _ = self._ls_amplitude_phase_for_freq(x, y, c)
-
-        # Dämpfung nur, wenn genügend Punkte
-        b = 0.0
-        if not (force_undamped_if_sparse and N < 6):
-            try:
-                env = np.abs(hilbert(y_centered))
-                pos = env > (np.nanmax(env) * 1e-6)
-                if np.sum(pos) >= 3:
-                    xs = x[pos]
-                    ln_env = np.log(env[pos] + 1e-12)
-                    A = np.column_stack((xs, np.ones_like(xs)))
-                    sol, *_ = np.linalg.lstsq(A, ln_env, rcond=None)
-                    slope = float(sol[0]) if sol.size > 0 else 0.0
-                    b = max(-slope, 0.0)
-            except Exception:
-                b = 0.0
-
-        return {"a": float(a), "b": float(b), "c": float(c), "d": float(phi), "offset": float(offset)}
 
     def _ls_amplitude_phase_for_freq(self,x, y, omega):
         """
@@ -683,20 +745,22 @@ class FitManager:
 
         # --- Gaussian / Lorentzian ---
         if fn == "gaussian":
-            a = float(np.nanmax(abs(y-np.mean(y)))+np.mean(y)) #assumes there are more points outside the gaussian than inside
-            max_index=np.argwhere(abs(y-np.mean(y))+np.mean(y)==a)
-            b = float(x[int(max_index)])
-            a*=[-1,1][y[int(max_index)]>=np.mean(y)]
+            dev=abs(y-np.mean(y))
+            max_index=int(np.nanargmax(dev)) # first index of the largest deviation (also safe if several points tie)
+            a = float(dev[max_index]+np.mean(y)) #assumes there are more points outside the gaussian than inside
+            b = float(x[max_index])
+            a*=[-1,1][y[max_index]>=np.mean(y)]
             c = float((float(x[-1] - x[0]) / 6.0) if x.size > 1 else 1.0)
             o=float(np.nanmin(abs(y-np.mean(y)))+np.mean(y)) #assumes there are more points outside the gaussian than inside
             initial_guesses = {"a": a, "b": b, "c": c,"o":o}
             return initial_guesses
 
         if fn == "lorentzian":
-            a = float(np.nanmax(abs(y-np.mean(y)))+np.mean(y))
-            max_index=np.argwhere(abs(y-np.mean(y))+np.mean(y)==a)
-            b = float(x[int(max_index)])
-            a*=[-1,1][y[int(max_index)]>=np.mean(y)]
+            dev=abs(y-np.mean(y))
+            max_index=int(np.nanargmax(dev))
+            a = float(dev[max_index]+np.mean(y))
+            b = float(x[max_index])
+            a*=[-1,1][y[max_index]>=np.mean(y)]
             c = float((float(x[-1] - x[0]) / 10.0) if x.size > 1 else 1.0)
             o=float(np.nanmin(abs(y-np.mean(y)))+np.mean(y)) #assumes there are more points outside the lorentzian than inside
             initial_guesses = {"a": a, "b": b, "c": c, "o":o}
@@ -802,7 +866,7 @@ class FitManager:
             return initial_guesses
 
         # --- Default fallback: generische Werte basierend auf Ausdrucksvariablen ---
-        expr = self.fit_functions.get(function_name, "") or ""
+        expr = self.fits.get(function_name, {}).get("expression", "") or ""
         varnames = self._extract_variable_names_from_expr(expr)
         # heuristische Zuweisungen
         if varnames:
@@ -1038,15 +1102,15 @@ class FitManager:
             "function":function_build
         }
         #self.predefined_functions[name] = modified_expression
-        self.functions[name]=function_build
+        if name not in self._protected_names:
+            self.functions[name]=function_build
         self.fit_parameters[name] = self.fits[name]["parameters"]
 
         #save the new fit function
         if save:
             self.lines=self.lines+["|".join([name,expression,display_name or name])+"\n"]
-            fi=open("fit_functions.txt","w")
-            fi.writelines(self.lines)
-            fi.close()
+            with open("fit_functions.txt","w") as fi:
+                fi.writelines(self.lines)
 
 
     def prepare_parameters(self,parameter_combinations,overwrite=False): # ensures self.fits[name]["parameters"] is filled with fit parameters for the specified parameter combinations
@@ -1101,19 +1165,35 @@ class DataProcessor:
         self.unselected={param:[] for param in self.measurement_parameters.keys()}
         self.fitted_params_df=pa.DataFrame()
 
+    @staticmethod
+    def _open_store(folder):
+        """Open data.hdf (or data_revisited.hdf) read-only. Read-only mode avoids creating empty files."""
+        last_error = None
+        for fname in ("data.hdf", "data_revisited.hdf"):
+            candidate = os.path.join(folder, fname)
+            if not os.path.isfile(candidate):
+                continue
+            store = None
+            try:
+                store = pa.HDFStore(candidate, mode="r")
+                df = store["/df"]
+                return store, df
+            except Exception as e:
+                last_error = e
+                if store is not None:
+                    store.close()
+        raise FileNotFoundError(f"no readable data.hdf / data_revisited.hdf in {folder} ({last_error})")
+
     def load_data(self):
-    
+
+        if type(self.folder)!=type([]):
+            self.folder=[self.folder]
+        new=True
+        added_observations=[]
+        store=None
         try:
-            if type(self.folder)!=type([]):
-                self.folder=[self.folder]
-            new=True
             for folder in self.folder:
-                try:
-                    store = pa.HDFStore(os.path.join(folder,'data.hdf'))
-                    df = store['/df']
-                except:
-                    store = pa.HDFStore(os.path.join(folder,'data_revisited.hdf'))
-                    df = store['/df']
+                store, df = self._open_store(folder)
 
                 #for col, dtype in df._Datatypes.items():
                 #    if dtype == bool and df[col].dtype == object:
@@ -1122,10 +1202,9 @@ class DataProcessor:
                 #if getattr(store.get_storer("df").attrs, "Datatypes"):
                 try:
                     for key in ["Datatypes"]:
-                        print(1)
                         setattr(df, f"_{key}", getattr(store.get_storer("df").attrs, key))
                 except Exception as e:
-                    print(2,e)
+                    print("no stored Datatypes, guessing them:",e)
 
                     #example that has most of standard parameters
                     dtypes= {'sweeps': np.dtype('int32'),
@@ -1160,63 +1239,56 @@ class DataProcessor:
                         'A2_Power': np.dtype('float64'),
                         'windows_ps': np.dtype('O'),
                         'delays_ps': np.dtype('O')}
-                    
-                    print("21")
-                            
-                                
+
                     for key,dtype in dtypes.items():
                         try:
-                            print(key)
                             df = df.astype({key:dtype})
-                        except:
+                        except Exception:
                             pass
 
                     setattr(df, "_Datatypes", df.dtypes)
 
-                    
+
                 try:
                     df = df.astype(df._Datatypes)
-                except:
+                except Exception:
                     print("could not cast dtypes")
 
                 df["__None__"]=0
 
-                added_observations=[]
-
-                for col in df.columns:
+                for col in list(df.columns):
                     if col.startswith("result_"):
-                        df[f"recalculated_{col.replace('result_','')}"]=0.0#self.df[col]
-                        added_observations.append(f"recalculated_{col.replace('result_','')}")
+                        name=f"recalculated_{col.replace('result_','')}"
+                        df[name]=0.0#self.df[col]
+                        if name not in added_observations:
+                            added_observations.append(name)
                 for key in ["parameter_names","observation_names","dtypes"]:
                     setattr(df, f"_{key}", getattr(store.get_storer("df").attrs, key))
 
                 try: #TODO do this more concisely
                     for key in ["Datatypes"]:
-                        print(3)
                         setattr(df, f"_{key}", getattr(store.get_storer("df").attrs, key))
                 except Exception as e:
-                    print(4,e)
+                    print("falling back to the dataframe dtypes:",e)
                     for key in ["Datatypes"]:
                         setattr(df, f"_{key}", df.dtypes)
 
-                    
+
                 try:
                     df._Datatypes["__None__"]=np.dtype("int16")
                 except Exception as e:
                     print("error",e)
 
                 store.close()
-                
+                store=None
 
                 if new:
                     self.df=df
                     new=False
                 else:
+                    merge=False
                     if sorted(self.df.columns)==sorted(df.columns):
-                        self.df=pa.concat([self.df,df])
-                        for key in ["_parameter_names","_observation_names","_dtypes","_Datatypes"]:
-                            setattr(self.df, f"{key}", getattr(df, key))
-
+                        merge=True
                     else:
                         # Create a question message box.
                         reply = QMessageBox.question(
@@ -1226,27 +1298,29 @@ class DataProcessor:
                             QMessageBox.Yes | QMessageBox.No,    # Buttons to display
                             QMessageBox.No                      # Default button
                         )
-                        
-                        # Check the user's response.
-                        if reply == QMessageBox.Yes:
-                            self.df=pa.concat([self.df,df])
-                        else:
-                            pass
-                
-                
+                        merge = (reply == QMessageBox.Yes)
 
+                    if merge:
+                        # ignore_index: a duplicated index would break every df.at[...] lookup later on
+                        self.df=pa.concat([self.df,df],ignore_index=True)
+                        for key in ["_parameter_names","_observation_names","_dtypes","_Datatypes"]:
+                            setattr(self.df, f"{key}", getattr(df, key))
 
         except Exception as e:
-            store.close()
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
             print("Failed to load with HDFStore, trying a more primitive approach\nerror:",e)
             try:
-                self.df = pa.read_hdf(os.path.join(self.folder,'data.hdf'))
+                self.df = pa.read_hdf(os.path.join(self.folder[0],'data.hdf'))
                 self.df["__None__"] = 0
 
                 for i, trace in enumerate(self.df.trace):
                     try:
                         liste = list(map(int, re.findall(r'\d+', trace)))
-                        self.df.trace[i] = np.array(liste, dtype=np.int16)
+                        self.df.at[self.df.index[i],"trace"] = np.array(liste, dtype=np.int16)
                     except Exception as e:
                         print(e)
                         pass
@@ -1254,6 +1328,9 @@ class DataProcessor:
 
             except Exception as e:
                 print("Failed to load the data. no data loaded\nerror",e)
+
+        if not hasattr(self,"df") or not hasattr(self.df,"_parameter_names"):
+            raise RuntimeError(f"Could not load a usable dataframe from {self.folder}")
 
         self.columns=self.df.columns
         self.measurement_parameters={name:self.df[name].unique() for name in self.df._parameter_names+["__None__"]}
@@ -1263,9 +1340,11 @@ class DataProcessor:
     def make_trace_to_list(self):
         def fix_and_convert_list(string):
             try:
-                fixed=list(map(int, re.findall(r'\d+', trace)))
+                if not isinstance(string, str):  # already a list / array
+                    return [int(v) for v in string]
+                fixed=list(map(int, re.findall(r'\d+', string)))
                 return fixed
-            except (ValueError, SyntaxError):
+            except (ValueError, SyntaxError, TypeError):
                 return None  # Handle invalid strings
 
         traces = []
@@ -1326,7 +1405,7 @@ class DataProcessor:
             # Compute average count per SSR and store it
             for i, ssr in enumerate(ssrs):
                 avg = np.mean(ssr) if len(ssr) > 0 else np.nan
-                self.df.at[row_index, f"SSR{i+1}_average_counts"] = avg
+                self.df.iat[row_index, self.df.columns.get_loc(f"SSR{i+1}_average_counts")] = avg
 
             
 
@@ -1344,6 +1423,25 @@ class DataProcessor:
 
 
 
+    @staticmethod
+    def _variance_of_mean(df, keys):
+        """Variance of the plotted (averaged) value for every group of `keys`.
+        Every row i has the error sigma_i = 1/sqrt(events_i); the plain mean of n independent rows has the
+        variance sum(sigma_i^2)/n^2. Returns a dataframe with the `keys` and a column "var" (same order as the
+        groupby(...).agg("mean") used for the data) or None if there is no usable "events" column."""
+        if "events" not in df.columns or "events" in keys:
+            return None
+        events = pa.to_numeric(df["events"], errors="coerce").to_numpy(dtype=float)
+        valid = events > 0
+        inv = np.full(len(events), np.nan)
+        inv[valid] = 1.0 / events[valid]          # sigma_i^2 ; events <= 0 has no defined error -> nan
+        tmp = df[list(keys)].copy()
+        tmp["_inv"] = inv
+        g = tmp.groupby(list(keys), as_index=False).agg(inv_sum=("_inv", lambda s: s.sum(skipna=False)),
+                                                        n=("_inv", "size"))
+        g["var"] = g["inv_sum"] / g["n"] ** 2
+        return g
+
     def extract_data(self):
         def try_convert(val):
             try:
@@ -1351,13 +1449,14 @@ class DataProcessor:
             except:
                 return val
 
-        if not (self.x_axis_param!="__None__" and self.x_axis_param!="__None__"):
+        if not (self.x_axis_param!="__None__" and self.y_axis_param!="__None__"):
             print("no x and y axis defined, please select these to be able to plot")
             return
 
         self.label_to_combi = {}
         self.combi_to_label = {}
         self.data = {}
+        self.errors = {}  # combination -> array of error bars (1d plots only), or None if not available
 
         flag=False
 
@@ -1409,12 +1508,19 @@ class DataProcessor:
             self.label_to_combi[label] = combination
             self.combi_to_label[combination] = label
 
+            err=None
             if self.z_axis_param=="__None__":
                 self.two_d=False
                 if difference_param=="__None__":
                     prepared_df=filtered_df.groupby([self.x_axis_param], as_index=False).agg("mean", numeric_only=True)
                     x = np.array(prepared_df[self.x_axis_param])
                     y = np.array(prepared_df[self.y_axis_param])
+                    try:
+                        g = self._variance_of_mean(filtered_df, [self.x_axis_param])
+                        if g is not None:
+                            err = np.sqrt(g["var"].to_numpy(dtype=float))
+                    except Exception as e:
+                        print("could not compute the error bars:", e)
                 else:
                     prepared_df = filtered_df.groupby([self.x_axis_param,difference_param], as_index=False).agg("mean",
                                                                                                numeric_only=True)
@@ -1431,8 +1537,20 @@ class DataProcessor:
                             l2=l2[:L1]
                         y=l1-l2
 
+                    # error of a difference of two averaged curves: the variances add
+                    try:
+                        g = self._variance_of_mean(filtered_df, [self.x_axis_param, difference_param])
+                        if g is not None:
+                            u = prepared_df[difference_param].unique()
+                            v1 = g.loc[g[difference_param]==u[0]]["var"].to_numpy(dtype=float)
+                            v2 = g.loc[g[difference_param]==u[1]]["var"].to_numpy(dtype=float)
+                            n = min(len(v1), len(v2))
+                            err = np.sqrt(v1[:n] + v2[:n])
+                    except Exception as e:
+                        print("could not compute the error bars:", e)
 
                 self.data[combination] = (x, y, [])
+                self.errors[combination] = err if (err is not None and len(err)==len(y)) else None
 
             else: #2d plot
                 self.two_d=True
@@ -1827,11 +1945,13 @@ class DataProcessor:
 
 
                 else:
+                    if len(y)==0:  # a combination without data points cannot be transformed
+                        continue
                     z_fft=[]
                     y_fft = np.fft.rfft(y)
 
                     # Calculate the frequency axis
-                    x_fft = np.fft.rfftfreq(len(x), (x[1] - x[0]))
+                    x_fft = np.fft.rfftfreq(len(x), (x[1] - x[0]) if len(x) > 1 else 1.0)
 
                 self.data[combination]=[abs(x_fft),abs(y_fft),z_fft]
             else:
@@ -1847,6 +1967,10 @@ class FitApp(QMainWindow):
         self.history_manager=SQLiteHistoryManager()
         self.history_index=self.history_manager.get_count()
         self.previous_tab_index = 0
+        self.current_tab_name = None
+        self.errorbars_enabled = {}  # tab name -> plot error bars (default True)
+        self.plot_styles = {}  # tab name -> "line", "bar" (side by side) or "bar_overlay" (same x space, transparent)
+        self.current_literal = ""
         self.colorbars={}
         self.mouse_x,self.mouse_y=0,0
         self.show_uncertainity=True
@@ -1951,19 +2075,15 @@ class FitApp(QMainWindow):
 
         # Setup TreeView
         self.tree_view = QTreeView()
+        self.tree_view.setSelectionMode(QAbstractItemView.ExtendedSelection)#ExtendedSelection #SingleSelection
+        self.tree_view.setHeaderHidden(False)
+        self._set_tree_model(QStandardItemModel())  # empty model, so the tree is valid even if no folder gets chosen
 
         if root_path=="":
             self.select_directory()
         else:
             # Setup custom file model
-            self.model = NonLazyFileModel(root_path, self.progress_bar)
-            self.tree_view.setModel(self.model)
-
-        self.tree_view.setSelectionMode(QAbstractItemView.ExtendedSelection)#ExtendedSelection #SingleSelection
-        self.tree_view.setHeaderHidden(False)
-
-        # Connect selection change signal
-        self.tree_view.selectionModel().selectionChanged.connect(self.on_item_selected)
+            self._set_tree_model(NonLazyFileModel(root_path, self.progress_bar))
 
         # Setup search input
         self.search_input = QLineEdit()
@@ -2013,11 +2133,15 @@ class FitApp(QMainWindow):
         #clean up all the memory of what was related to that tab
         name = self.tab_widget.tabText(index)
         for dictionary in [self.data_processors,self.tabs_with_plot,self.paramx,self.paramy,self.plot_layouts,self.indexes,self.highliners,self.Tables,self.average_over_list_widgets,
-                           self.z_axis_list_widgets,self.x_axis_list_widgets,self.y_axis_list_widgets,self.apply_code_checkboxes,self.code_inputs,self.stacked_widgets,self.fit_manager.fits,
-                           self.fit_manager.functions,self.fit_manager.fit_parameters,self.tab_states,self.setters]:
-        
+                           self.z_axis_list_widgets,self.x_axis_list_widgets,self.y_axis_list_widgets,self.apply_code_checkboxes,self.code_inputs,self.stacked_widgets,
+                           self.tab_states,self.setters,self.errorbars_enabled,self.plot_styles]:
+
             if name in dictionary.keys():
                 del dictionary[name]
+
+        # colorbars are keyed by (tab, kind, id(axes))
+        for key in [k for k in self.colorbars if k[0]==name]:
+            del self.colorbars[key]
 
 
     def on_item_selected(self, selected, deselected):
@@ -2029,10 +2153,12 @@ class FitApp(QMainWindow):
         if selected_indexes:
             selected_index = selected_indexes[0]
             item = self.model.itemFromIndex(selected_index)
+            if item is None:
+                return
             full_path = item.data(Qt.UserRole)  # Full path of the file or folder
 
             # Check if the selected file is an image
-            if full_path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
+            if full_path and full_path.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".gif")):
                 self.show_image(full_path)
 
     def show_image(self, image_path):
@@ -2053,6 +2179,12 @@ class FitApp(QMainWindow):
         self.image_window.setLayout(layout)
         self.image_window.show()
 
+    def _set_tree_model(self, model):
+        """Set the model of the tree and (re)connect the selection signal exactly once per model."""
+        self.model = model
+        self.tree_view.setModel(model)
+        self.tree_view.selectionModel().selectionChanged.connect(self.on_item_selected)
+
     def select_directory(self):
         directory = QFileDialog.getExistingDirectory(
             self,
@@ -2061,17 +2193,11 @@ class FitApp(QMainWindow):
         )
 
         if directory:
-            self.model = NonLazyFileModel(directory,self.progress_bar)
-
-            # Setup TreeView
-            self.tree_view.setModel(self.model)
-            self.tree_view.setSelectionMode(QAbstractItemView.ExtendedSelection)#ExtendedSelection #SingleSelection
-            self.tree_view.setHeaderHidden(False)
-            self.tree_view.selectionModel().selectionChanged.connect(self.on_item_selected)
+            self.root_path = directory
+            self._set_tree_model(NonLazyFileModel(directory,self.progress_bar))
             self.root_path_button.setText(f"{directory}")
-            fi = open("root_folder.txt", "w")
-            fi.writelines([directory])
-            fi.close()
+            with open("root_folder.txt", "w") as fi:
+                fi.writelines([directory])
 
     def on_search_changed(self, text):
         """
@@ -2112,6 +2238,16 @@ class FitApp(QMainWindow):
 
         root_item = self.model.invisibleRootItem()
         root_index = self.tree_view.rootIndex()
+        if not search_str:
+            # no entry: show everything again but do NOT expand the whole folder structure
+            def unhide(parent_item, parent_index):
+                for row in range(parent_item.rowCount()):
+                    child_item = parent_item.child(row)
+                    self.tree_view.setRowHidden(row, parent_index, False)
+                    unhide(child_item, self.model.indexFromItem(child_item))
+            unhide(root_item, root_index)
+            self.tree_view.collapseAll()
+            return
         recursive_filter_and_expand(root_item, root_index)
 
     def guess_initial_values(self):
@@ -2123,6 +2259,9 @@ class FitApp(QMainWindow):
             None
         )
 
+        if selected_fit is None or not self.fit_manager.fits[selected_fit]["parameters"]:
+            print("nothing to guess: plot some data first")
+            return
         data=self.fit_manager.fits[selected_fit]
         if len(data.keys()):
             params=data["parameters"][list(data["parameters"].keys())[0]]
@@ -2130,10 +2269,17 @@ class FitApp(QMainWindow):
 
             if processor.two_d==False:
                 for combi in processor.data.keys():
+                    if combi not in data["parameters"]:
+                        continue
                     x,y,z=processor.data[combi]
-                    guesses=self.fit_manager.get_smat_initial_guesses(selected_fit,x,y,param_names)
+                    try:
+                        guesses=self.fit_manager.get_smat_initial_guesses(selected_fit,x,y,param_names)
+                    except Exception as e:
+                        print("could not guess the initial values for",combi,":",e)
+                        continue
                     for par,value in guesses.items():
-                        data["parameters"][combi][par]["initial_guess"]=float(value)
+                        if par in data["parameters"][combi]: # a guess may contain names the expression does not use
+                            data["parameters"][combi][par]["initial_guess"]=float(value)
 
                 self.update_parameter_table(self.fit_manager.fits[selected_fit]["parameters"])
             else:
@@ -2230,6 +2376,14 @@ class FitApp(QMainWindow):
     def _setup_default_fit_functions(self):
         pass
 
+    def _selected_fit_name(self):
+        """Name (dictionary key) of the fit function currently chosen in the combobox (which shows display names)."""
+        text=self.fit_combobox.currentText()
+        for name,data in self.fit_manager.fits.items():
+            if data["display_name"]==text:
+                return name
+        return text
+
     def switch_to_tab(self,name):
         for i in range(self.tab_widget.count()):
             if self.tab_widget.tabText(i) == name:
@@ -2262,7 +2416,10 @@ class FitApp(QMainWindow):
             code_editor.setPlainText(code_content)
             code_editor.update()
 
-            processor.read_code(code_content)
+            try:
+                processor.read_code(code_content)
+            except Exception as e:
+                print("could not read ana_seq / step_idx from meas_code.py:",e)
 
         else:
             code_editor.setPlainText("meas_code.py not found in the folder.")
@@ -2306,12 +2463,18 @@ class FitApp(QMainWindow):
         if self.switch_to_tab(name):
             return
 
+        try:
+            processor=DataProcessor(folder,self.progress_bar)
+        except Exception as e:
+            print(f"Could not open '{name}':",e)
+            QMessageBox.warning(self,"Could not load data",f"Could not load '{name}':\n{e}")
+            return
+
         self.paramx[name] = "__None__"
         self.paramy[name] = "__None__"
 
         overtab=QTabWidget()
         tab = QWidget()
-        processor=DataProcessor(folder,self.progress_bar)
 
         self.plot_layouts[name]=(1,1)
         self.indexes[name] = {"paramx": {par: i for i, par in enumerate(processor.measurement_parameters["__None__"])},
@@ -2358,6 +2521,8 @@ class FitApp(QMainWindow):
             tab_name=self.current_tab_name
 
         tab=self.get_tab_widget_by_name(self.tab_widget,tab_name)
+        for key in [k for k in self.colorbars if k[0]==tab_name]: # they belong to the old figures
+            del self.colorbars[key]
         figure,ax,canvas=self.init_plot_space(tab_name,tab)
 
         self.data_processors[tab_name].update({
@@ -2388,7 +2553,7 @@ class FitApp(QMainWindow):
             if item.text():
                 col = item.column()
                 col_name = list(processor.measurement_parameters.keys())[col]
-                selected_values[col_name].append(datatypes[col_name].type(item.text()))
+                selected_values[col_name].append(convert_cell_text(datatypes[col_name], item.text()))
 
         for col in range(table.columnCount()):
             col_name = list(processor.measurement_parameters.keys())[col]
@@ -2397,7 +2562,7 @@ class FitApp(QMainWindow):
                     item = table.item(row, col)
                     if item and item.text():
                         item.setSelected(True)
-                        selected_values[col_name].append(datatypes[col_name].type(item.text()))
+                        selected_values[col_name].append(convert_cell_text(datatypes[col_name], item.text()))
 
         # Get the unselected cells
         unselected_values = {list(processor.measurement_parameters.keys())[col]: [] for col in
@@ -2407,7 +2572,7 @@ class FitApp(QMainWindow):
                 col_name = list(processor.measurement_parameters.keys())[col]
                 item = table.item(row, col)
                 if item and item.text() and not item.isSelected():
-                    unselected_values[col_name].append(datatypes[col_name].type(item.text()))
+                    unselected_values[col_name].append(convert_cell_text(datatypes[col_name], item.text()))
 
         # Deselect empty cells immediately
         for item in table.selectedItems():
@@ -2491,7 +2656,7 @@ class FitApp(QMainWindow):
 
         if self.apply_code_checkboxes[tab_name].isChecked():
             # Get user code
-            user_code = self.code_inputs[self.current_tab_name].toPlainText()
+            user_code = self.code_inputs[tab_name].toPlainText()
 
             self.history_manager.add_input(user_code)
 
@@ -2519,6 +2684,16 @@ class FitApp(QMainWindow):
 
         return x,y,z
     
+    @staticmethod
+    def _backup_file(src_file,dst_file):
+        """Copy the old file into the archive before it is overwritten.
+        A missing source (first run) is skipped, a failing copy aborts so nothing is overwritten without backup."""
+        os.makedirs(os.path.dirname(dst_file),exist_ok=True)
+        if os.path.isfile(src_file):
+            shutil.copy(src_file,dst_file)
+        else:
+            print("no previous file to archive:",src_file)
+
     def gen_rabi(self):
         processor=self.data_processors[self.current_tab_name]["processor"]
         selected_fit = next(
@@ -2630,7 +2805,7 @@ class FitApp(QMainWindow):
                     dst=f
                     zeit=str(datetime.datetime.now()).replace(" ","").replace(":","_")[:-7]
                     dst=dst.replace("/e_rabi_ou350deg-90-",f"/rabi_parameters_archive/{zeit}_e_rabi_ou350deg-90-")#.replace(".dat",f"_{zeit}.dat")
-                    shutil.copy(f,dst)
+                    self._backup_file(f,dst)
                     column_order = ['amp0', 'transition', 'omega',"phi", 'date']
                     final_df[column_order].to_csv(f, sep ='\t', index = False)
                     print(final_df)
@@ -2685,7 +2860,7 @@ class FitApp(QMainWindow):
                 zeit=str(datetime.datetime.now()).replace(" ","").replace(":","_")[:-7]
                 dst=dst.replace("/e_rabi_ou350deg-90-",f"/rabi_parameters_archive/{zeit}_e_rabi_ou350deg-90-")#.replace(".dat",f"_{zeit}.dat")
                 print("generating: ",dst, " from ", f)
-                shutil.copy(f,dst)
+                self._backup_file(f,dst)
                 column_order = ['amp0', 'transition', 'omega',"phi", 'date']
                 merged[column_order].to_csv(f, sep ='\t', index = False)
                 print(merged)
@@ -2694,6 +2869,116 @@ class FitApp(QMainWindow):
 
 
 
+
+    @staticmethod
+    def _fmt(value):
+        """Full precision text of a number (so that copied values lose nothing)."""
+        return repr(float(value))
+
+    def _stat_rows(self, subplot, name, kind, x, y, z=None):
+        """min / max / mean rows (x,y[,z]) of one plotted line or image."""
+        x_raw = np.asarray(x).ravel()
+        y = np.asarray(y, dtype=float).ravel()
+        if z is None:
+            try:
+                x = x_raw.astype(float)
+                numeric_x = True
+            except (ValueError, TypeError):  # strings (categories) on the x axis
+                x = x_raw
+                numeric_x = False
+            valid = np.isfinite(y) & (np.isfinite(x) if numeric_x else np.ones(len(x), dtype=bool))
+            if not valid.any():
+                return []
+            x, y = x[valid], y[valid]
+            i_min, i_max = int(np.argmin(y)), int(np.argmax(y))
+            show_x = self._fmt if numeric_x else str
+            mean_x = self._fmt(x.mean()) if numeric_x else ""  # the mean of labels does not exist
+            return [
+                [subplot, name, kind, "min", show_x(x[i_min]), self._fmt(y[i_min]), ""],
+                [subplot, name, kind, "max", show_x(x[i_max]), self._fmt(y[i_max]), ""],
+                [subplot, name, kind, "mean", mean_x, self._fmt(y.mean()), ""],
+            ]
+        x = np.asarray(x_raw, dtype=float)
+        z = np.asarray(z, dtype=float).ravel()
+        valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+        if not valid.any():
+            return []
+        x, y, z = x[valid], y[valid], z[valid]
+        i_min, i_max = int(np.argmin(z)), int(np.argmax(z))
+        return [
+            [subplot, name, kind, "min", self._fmt(x[i_min]), self._fmt(y[i_min]), self._fmt(z[i_min])],
+            [subplot, name, kind, "max", self._fmt(x[i_max]), self._fmt(y[i_max]), self._fmt(z[i_max])],
+            [subplot, name, kind, "mean", self._fmt(x.mean()), self._fmt(y.mean()), self._fmt(z.mean())],
+        ]
+
+    def compute_line_statistics(self, tab_name):
+        """Collect min/max/mean (x and y values) of everything that is drawn in the tab, read from the
+        matplotlib axes themselves, so it is exactly what is on screen (data, fits, lines added by user code)."""
+        data = self.data_processors[tab_name]
+        processor = data["processor"]
+        rows = []
+
+        if not processor.two_d:
+            axes = np.asarray(data["axes"])[0]  # (nx, ny) grid of axes
+            for ix in range(axes.shape[0]):
+                for iy in range(axes.shape[1]):
+                    ax = axes[ix, iy]
+                    subplot = f"[{ix},{iy}]"
+                    title = ax.get_title()
+                    for n, line in enumerate(ax.get_lines()):
+                        gid = line.get_gid()
+                        if gid == "errorbar_cap":
+                            continue
+                        kind = gid if gid in ("data", "fit") else "other"
+                        label = line.get_label()
+                        if not label or label.startswith("_"):
+                            label = title or f"line {n}"
+                        rows.extend(self._stat_rows(subplot, label, kind, line.get_xdata(), line.get_ydata()))
+                    for n, container in enumerate(ax.containers):  # bar plots
+                        if hasattr(container, "pp_xy"):
+                            label = container.get_label()
+                            if not label or label.startswith("_"):
+                                label = title or f"bars {n}"
+                            rows.extend(self._stat_rows(subplot, label, "data", *container.pp_xy))
+        else:
+            from matplotlib.collections import QuadMesh, PolyCollection
+            for k, kind in enumerate(["original", "fitted", "difference"]):
+                axes = np.asarray(data["axes"])[k]
+                for ix in range(axes.shape[0]):
+                    for iy in range(axes.shape[1]):
+                        ax = axes[ix, iy]
+                        for c in ax.collections:
+                            if not isinstance(c, (QuadMesh, PolyCollection)) or c.get_array() is None:
+                                continue
+                            try:
+                                z = np.ma.filled(np.ma.asarray(c.get_array()).astype(float), np.nan)
+                                if hasattr(c, "get_coordinates"):
+                                    corners = c.get_coordinates()           # (M+1, N+1, 2)
+                                    cx = 0.25 * (corners[:-1, :-1, 0] + corners[1:, :-1, 0] + corners[:-1, 1:, 0] + corners[1:, 1:, 0])
+                                    cy = 0.25 * (corners[:-1, :-1, 1] + corners[1:, :-1, 1] + corners[:-1, 1:, 1] + corners[1:, 1:, 1])
+                                    z = z.reshape(cx.shape)
+                                else:
+                                    continue
+                                rows.extend(self._stat_rows(f"[{ix},{iy}]", ax.get_title() or "image", kind, cx, cy, z))
+                            except Exception as e:
+                                print("could not read the statistics of an image:", e)
+        return rows
+
+    def show_line_statistics(self):
+        tab_name = self.current_tab_name
+        if tab_name is None or tab_name not in self.data_processors:
+            return
+        try:
+            rows = self.compute_line_statistics(tab_name)
+        except Exception as e:
+            print("could not compute the line statistics:", e)
+            QMessageBox.warning(self, "Statistics", f"Could not compute the statistics:\n{e}")
+            return
+        if not rows:
+            QMessageBox.information(self, "Statistics", "Nothing is plotted yet.")
+            return
+        self.stats_dialog = LineStatsDialog(rows, self)  # keep a reference so it is not garbage collected
+        self.stats_dialog.show()
 
     def export_data(self):
 
@@ -2774,6 +3059,9 @@ class FitApp(QMainWindow):
                 (name for name, data in self.fit_manager.fits.items() if data["display_name"] == self.fit_combobox.currentText()),
                 None
             )
+            if selected_fit is None:
+                print("No fit function selected, parameters.json is not written.")
+                return
             nested_data = {"expression":self.fit_manager.fits[selected_fit]["expression"]}
 
             for i,combi in enumerate(self.fit_manager.fits[selected_fit]["parameters"].keys()):
@@ -2785,7 +3073,12 @@ class FitApp(QMainWindow):
             with open(os.path.join(folder_path,"parameters.json"), "w") as fi:
                 json.dump(nested_data, fi, indent=4)
 
-            self.data_processors[self.current_tab_name]["figure"].savefig(os.path.join(folder_path,"plot.png"))
+            figure=self.data_processors[self.current_tab_name]["figure"]
+            if isinstance(figure,(list,tuple)): # 2d plots have one figure per sub tab
+                for fig,suffix in zip(figure,["original","fitted","difference"]):
+                    fig.savefig(os.path.join(folder_path,f"plot_{suffix}.png"))
+            else:
+                figure.savefig(os.path.join(folder_path,"plot.png"))
 
         else:
             print("No folder selected.")
@@ -2907,6 +3200,21 @@ class FitApp(QMainWindow):
 
         apply_code_checkbox = QCheckBox("apply code")
         container_up_layout.addWidget(apply_code_checkbox)
+
+        errorbar_checkbox = QCheckBox("errorbars")
+        errorbar_checkbox.setToolTip("Error bars of the 1d data: 1/sqrt(events) per row, error of the mean when averaging\n"
+                                     "(not shown in FFT mode)")
+        self.errorbars_enabled[name] = True
+        errorbar_checkbox.setChecked(True)
+        errorbar_checkbox.toggled.connect(lambda checked, tab_name=name: self.toggle_errorbars(tab_name, checked))
+        container_up_layout.addWidget(errorbar_checkbox)
+
+        plot_style_combobox = QComboBox()
+        plot_style_combobox.addItems(["line plot", "bar plot (side by side)", "bar plot (overlay, transparent)"])
+        plot_style_combobox.setToolTip("Plot style of the 1d data (error bars, fits and the statistics work for both)")
+        self.plot_styles[name] = "line"
+        plot_style_combobox.currentTextChanged.connect(lambda text, tab_name=name: self.change_plot_style(tab_name, text))
+        container_up_layout.addWidget(plot_style_combobox)
         #apply_code_checkbox.stateChanged.connect(self.apply_code)
 
         # Text editor for Python code
@@ -2966,7 +3274,7 @@ print(t)"""
         history_layout=QHBoxLayout(history_control_buttons)
 
         forward_button = QPushButton()
-        style = app.style()
+        style = QApplication.style()
         arrow_icon = style.standardIcon(style.SP_ArrowRight)
         forward_button.setIcon(arrow_icon)
 
@@ -2991,6 +3299,11 @@ print(t)"""
         export_button = QPushButton("Export data")
         export_button.clicked.connect(self.export_data)
         container_down_layout.addWidget(export_button)
+
+        stats_button = QPushButton("Min / Max / Mean of lines")
+        stats_button.setToolTip("Shows the x,y values of min, max and mean of every plotted line (also the fits)")
+        stats_button.clicked.connect(self.show_line_statistics)
+        container_down_layout.addWidget(stats_button)
 
         gen_rabi_button = QPushButton("Generate e-rabi file")
         gen_rabi_button.clicked.connect(self.gen_rabi)
@@ -3077,8 +3390,7 @@ print(t)"""
         self.update_plot_area_and_plot(self.current_tab_name)
 
         self.fit_manager.prepare_parameters(self.data_processors[self.current_tab_name]["processor"].data.keys())
-        fit_name = self.fit_combobox.currentText()
-        fit_data = self.fit_manager.fits[fit_name]
+        fit_data = self.fit_manager.fits[self._selected_fit_name()]
         self.update_parameter_table(fit_data["parameters"])
 
 
@@ -3151,7 +3463,8 @@ print(t)"""
     def on_difference_combobox_changed(self,new_param):
         new_axis_elements = self.data_processors[self.current_tab_name]["processor"].measurement_parameters[new_param]
         if len(new_axis_elements)!=2:
-            print("Error:invalid number of parameters, selection will be ignored.")
+            if new_param!="__None__":
+                print("Error:invalid number of parameters, selection will be ignored.")
             self.data_processors[self.current_tab_name]["processor"].difference_param = "__None__"
         else:
             self.data_processors[self.current_tab_name]["processor"].difference_param=new_param
@@ -3201,7 +3514,8 @@ print(t)"""
         self.remove_canvas_and_toolbar(parent_tab)
 
         # Initialize new figures
-        fig, ax = plt.subplots(*self.plot_layouts[name])
+        fig = Figure()
+        ax = fig.subplots(*self.plot_layouts[name])
         canvas = FigureCanvasQTAgg(fig)
         toolbar = NavigationToolbar2QT(canvas, parent_tab)
 
@@ -3225,11 +3539,68 @@ print(t)"""
 
     def get_axes(self,combi,tab_name):
         processor=self.data_processors[tab_name]["processor"]
-        actual_param_x, actual_param_y = combi[processor.parameter_map.index(self.paramx[self.current_tab_name])], combi[processor.parameter_map.index(self.paramy[self.current_tab_name])]
+        actual_param_x, actual_param_y = combi[processor.parameter_map.index(self.paramx[tab_name])], combi[processor.parameter_map.index(self.paramy[tab_name])]
         x=self.indexes[tab_name]["paramx"][actual_param_x]
         y=self.indexes[tab_name]["paramy"][actual_param_y]
 
         return self.data_processors[tab_name]["axes"][:,x,y]
+
+    def _bar_slot(self, tab_name, combination, ax, x_data=None):
+        """(index, count, categories) of a combination among all combinations drawn in the same axes
+        (for side by side bars). categories is None for a numeric x axis, otherwise the ordered list of the
+        x labels (strings) of all combinations in this axes, so every combination uses the same positions."""
+        processor = self.data_processors[tab_name]["processor"]
+        group = []
+        for c, (x, y, z) in processor.data.items():
+            try:
+                if len(y) > 0 and self.get_axes(c, tab_name)[0] is ax:
+                    group.append(c)
+            except Exception:
+                pass
+        if combination not in group:
+            group.append(combination)
+
+        x_lists = []
+        for c in group:
+            x_lists.append(x_data if (c == combination and x_data is not None) else processor.data[c][0])
+        try:
+            for xs in x_lists:
+                np.asarray(xs, dtype=float)
+            categories = None
+        except (ValueError, TypeError):
+            categories = []
+            for xs in x_lists:
+                for v in np.asarray(xs).ravel():
+                    if str(v) not in categories:
+                        categories.append(str(v))
+        return group.index(combination), len(group), categories
+
+    def change_plot_style(self, tab_name, style):
+        if style.startswith("bar") and "overlay" in style:
+            self.plot_styles[tab_name] = "bar_overlay"
+        elif style.startswith("bar"):
+            self.plot_styles[tab_name] = "bar"
+        else:
+            self.plot_styles[tab_name] = "line"
+        self.replot_tab_keeping_fits(tab_name)
+
+    def toggle_errorbars(self, tab_name, checked):
+        """Switch the error bars of one tab on/off and redraw it (keeping the fits that were already made)."""
+        self.errorbars_enabled[tab_name] = bool(checked)
+        self.replot_tab_keeping_fits(tab_name)
+
+    def replot_tab_keeping_fits(self, tab_name):
+        if tab_name not in self.data_processors:
+            return
+        processor = self.data_processors[tab_name]["processor"]
+        if processor.two_d or not getattr(processor, "data", None):
+            return  # error bars / plot styles only exist for 1d plots / nothing plotted yet
+        fit_name = self._selected_fit_name()
+        self.clear_plot(tab_name)
+        for combination in list(processor.data.keys()):
+            has_fit = (fit_name in processor.fit_results
+                       and combination in processor.fit_results[fit_name]["best_fit"])
+            self.plot_data_single(tab_name, fit_name=fit_name if has_fit else None, combination=combination)
 
     def plot_all_tabs(self):
         for tab in self.data_processors.keys():
@@ -3238,7 +3609,7 @@ print(t)"""
     def plot_data_single(self, tab_name, fit_name=None,combination=None,clear_plot=False):
         data = self.data_processors[tab_name]
         processor = data["processor"]
-        max_y_lims=(1000,-1000)
+        max_y_lims=(np.inf,-np.inf)  # was (1000,-1000): data beyond +-1000 got clipped
 
         if combination!=None:
             combinations=[combination]
@@ -3282,12 +3653,12 @@ print(t)"""
 
                 # Original Data with Fitted Contours
                 contour=ax_original.pcolor(x_data, y_data, z_data, cmap="viridis")
-                if tab_name+"original" in self.colorbars.keys():
-                    original_colorbar=self.colorbars[tab_name + "original"]
+                if (tab_name,"original",id(ax_original)) in self.colorbars.keys():
+                    original_colorbar=self.colorbars[(tab_name,"original",id(ax_original))]
                     original_colorbar.update_normal(contour)
                 else:
                     original_colorbar = fig_original.colorbar(contour, ax=ax_original, orientation="vertical")
-                    self.colorbars[tab_name + "original"] = original_colorbar
+                    self.colorbars[(tab_name,"original",id(ax_original))] = original_colorbar
 
                 if fitted is not None:
                     ax_original.contour(x_data, y_data, fitted, colors="red", linestyles="dashed")
@@ -3298,12 +3669,12 @@ print(t)"""
                 # Fitted Data Plot
                 if fitted is not None:
                     contour=ax_fitted.pcolor(x_data, y_data, fitted, cmap="viridis")
-                    if tab_name + "fitted" in self.colorbars.keys():
-                        fitted_colorbar = self.colorbars[tab_name + "fitted"]
+                    if (tab_name,"fitted",id(ax_fitted)) in self.colorbars.keys():
+                        fitted_colorbar = self.colorbars[(tab_name,"fitted",id(ax_fitted))]
                         fitted_colorbar.update_normal(contour)
                     else:
                         fitted_colorbar = fig_fitted.colorbar(contour, ax=ax_fitted, orientation="vertical")
-                        self.colorbars[tab_name + "fitted"] = fitted_colorbar
+                        self.colorbars[(tab_name,"fitted",id(ax_fitted))] = fitted_colorbar
 
                 ax_fitted.set_title(" ".join([titlex,titley]))
                 ax_fitted.set_xlabel(processor.y_axis_param)
@@ -3313,26 +3684,26 @@ print(t)"""
                 if fitted is not None:
                     diff = z_data - fitted
                     contour=ax_diff.pcolor(x_data, y_data, diff, cmap="coolwarm")
-                    if tab_name + "diff" in self.colorbars.keys():
-                        diff_colorbar = self.colorbars[tab_name + "diff"]
+                    if (tab_name,"diff",id(ax_diff)) in self.colorbars.keys():
+                        diff_colorbar = self.colorbars[(tab_name,"diff",id(ax_diff))]
                         diff_colorbar.update_normal(contour)
                     else:
                         diff_colorbar = fig_diff.colorbar(contour, ax=ax_diff, orientation="vertical")
-                        self.colorbars[tab_name + "diff"] = diff_colorbar
+                        self.colorbars[(tab_name,"diff",id(ax_diff))] = diff_colorbar
 
                 ax_diff.set_title(" ".join([titlex,titley]))
                 ax_diff.set_xlabel(processor.y_axis_param)
                 ax_diff.set_ylabel(processor.x_axis_param)
 
-                for i in range(3):
+                for k in range(3):
                     # Collect unique handles and labels from all subplots
-                    handles_labels = [ax.get_legend_handles_labels() for ax in data["axes"][i].flat]
+                    handles_labels = [ax.get_legend_handles_labels() for ax in data["axes"][k].flat]
                     handles, labels = zip(*handles_labels)
                     unique_handles_labels = {label: handle for handle, label in zip(sum(handles, []), sum(labels, []))}
 
                     # Add a single legend for the figure
-                    #data["figure"][i].legend(unique_handles_labels.values(), unique_handles_labels.keys(), loc="upper center", ncol=4, fontsize=10)
-                    data["figure"][i].subplots_adjust(left=0.05, right=0.99, top=0.9, bottom=0.1)
+                    #data["figure"][k].legend(unique_handles_labels.values(), unique_handles_labels.keys(), loc="upper center", ncol=4, fontsize=10)
+                    data["figure"][k].subplots_adjust(left=0.05, right=0.99, top=0.9, bottom=0.1)
 
 
                 canvas_original.draw()
@@ -3358,7 +3729,51 @@ print(t)"""
 
                 label=" ".join(L)
 
-                ax.plot(x_data, y_data, ".-", label=label)
+                errors = getattr(processor, "errors", {}).get(combination)
+                use_errorbars = (self.errorbars_enabled.get(tab_name, True) and errors is not None
+                                 and not processor.fft_mode  # the errors belong to the time-domain data
+                                 and len(errors) == len(np.atleast_1d(y_data)) == len(np.atleast_1d(x_data)))
+                if (self.errorbars_enabled.get(tab_name, True) and errors is not None and not processor.fft_mode
+                        and len(errors) != len(np.atleast_1d(y_data))):
+                    print("error bars skipped: the user code changed the number of points")
+                plot_style = self.plot_styles.get(tab_name, "line")
+                if plot_style in ("bar", "bar_overlay"):
+                    overlay = plot_style == "bar_overlay"
+                    try:
+                        ys = np.asarray(y_data, dtype=float)
+                        slot, n_slots, categories = self._bar_slot(tab_name, combination, ax, x_data)
+                        if overlay:  # all combinations share the same x space and are made see-through
+                            slot, n_slots = 0, 1
+                        if categories is None:
+                            xs = np.asarray(x_data, dtype=float)
+                            finite_x = np.unique(xs[np.isfinite(xs)])
+                            spacing = np.diff(finite_x).min() if len(finite_x) > 1 else 1.0
+                        else:  # strings on the x axis: bars at 0,1,2,... with the strings as tick labels
+                            xs = np.array([categories.index(str(v)) for v in np.asarray(x_data).ravel()], dtype=float)
+                            spacing = 1.0
+                        slot_width = 0.8 * spacing / n_slots  # several combinations in one axes -> side by side
+                        offset = (slot - (n_slots - 1) / 2) * slot_width
+                        bars = ax.bar(xs + offset, ys, width=slot_width, label=label, alpha=0.5 if overlay else 0.8,
+                                      yerr=errors if use_errorbars else None, capsize=2)
+                        bars.pp_xy = (np.asarray(x_data), ys)  # the real (not shifted) x values, used by the statistics button
+                        if categories is not None:
+                            ax.set_xticks(range(len(categories)))
+                            ax.set_xticklabels(categories)
+                        if use_errorbars and getattr(bars, "errorbar", None) is not None:
+                            for cap in bars.errorbar.lines[1]:
+                                cap.set_gid("errorbar_cap")
+                    except Exception as e:
+                        print("bar plot not possible, using a line plot:", e)
+                        plot_style = "line"
+                if plot_style not in ("bar", "bar_overlay"):
+                    if use_errorbars:
+                        container = ax.errorbar(x_data, y_data, yerr=errors, fmt=".-", capsize=2, label=label)
+                        data_line = container.lines[0]
+                        for cap in container.lines[1]:
+                            cap.set_gid("errorbar_cap")  # not a "line" for the statistics button
+                    else:
+                        data_line,=ax.plot(x_data, y_data, ".-", label=label)
+                    data_line.set_gid("data")  # lets the min/max/mean button tell data and fit lines apart
                 if fitted is not None:
                     if  combination in processor.fit_results[fit_name]["best_fit_long"].keys() and self.fit_long:
                         fitted=processor.fit_results[fit_name]["best_fit_long"][combination]
@@ -3368,11 +3783,15 @@ print(t)"""
                         x_data_long=x_data.copy()
 
                     
-                    ax.plot(x_data_long, fitted, label=["Fit " + label], color="red")
+                    fit_line,=ax.plot(x_data_long, fitted, label="Fit " + label, color="red")
+                    fit_line.set_gid("fit")
                     if self.show_uncertainity:
-                        uncertainty= processor.fit_results[fit_name]["result"][combination].eval_uncertainty(x=x_data_long)
-                        ax.fill_between(x_data_long, fitted - uncertainty, fitted + uncertainty,
-                                     color='gray', alpha=0.5, label='1-sigma uncertainty')
+                        try:
+                            uncertainty= processor.fit_results[fit_name]["result"][combination].eval_uncertainty(x=x_data_long)
+                            ax.fill_between(x_data_long, fitted - uncertainty, fitted + uncertainty,
+                                         color='gray', alpha=0.5, label='1-sigma uncertainty')
+                        except Exception as e: # e.g. no covariance matrix available
+                            print("could not compute the uncertainty band:",e)
 
                 #ax.legend()
                 ax.set_title(" ".join([titlex,titley]))
@@ -3403,7 +3822,7 @@ print(t)"""
                 processor.progress_bar.setValue(int((i+1) / len(combinations) * 100))
 
         for i,combination in enumerate(combinations):
-            if not processor.two_d:
+            if not processor.two_d and np.all(np.isfinite(max_y_lims)):
                 ax = self.get_axes(combination,tab_name)[0]
                 ax.set_ylim(max_y_lims)
 
@@ -3412,11 +3831,11 @@ print(t)"""
 
     def perform_fit(self):
         current_tab_name = self.tab_widget.tabText(self.tab_widget.currentIndex())
-        self.clear_plot(current_tab_name)
-        parameter_combinations=self.data_processors[current_tab_name]["processor"].data.keys()
         if current_tab_name not in self.data_processors:
             print("Error: tab does not have a data_processor")
             return
+        self.clear_plot(current_tab_name)
+        parameter_combinations=self.data_processors[current_tab_name]["processor"].data.keys()
 
         selected_display_name = self.fit_combobox.currentText()
 
@@ -3444,7 +3863,12 @@ print(t)"""
 
             new_function_name = new_function_name.strip()
             # Add the new fit function to FitManager and the ComboBox
-            self.fit_manager.add_fit_function(new_function_name, self.current_literal, new_function_name)
+            try:
+                self.fit_manager.add_fit_function(new_function_name, self.current_literal, new_function_name)
+            except Exception as e:
+                print("The fit function literal is invalid:",e)
+                QMessageBox.warning(self,"Invalid fit function",f"Could not use this function:\n{e}")
+                return
             #self.fit_manager.prepare_parameters(processor.data.keys())
             self.fit_combobox.addItem(new_function_name)
             self.fit_combobox.setCurrentText(new_function_name)
@@ -3492,6 +3916,9 @@ print(t)"""
                 print("error saving tab state, ",e)
 
         new_tab_name = self.tab_widget.tabText(index)
+        if new_tab_name not in self.data_processors:  # e.g. the last tab was just closed
+            self.previous_tab_index = index
+            return
 
         self.fit_manager.prepare_parameters(self.data_processors[new_tab_name]["processor"].data.keys())
         self.current_tab_name = new_tab_name
@@ -3532,8 +3959,7 @@ print(t)"""
             self.update_parameter_table(state["parameters"],tab_name)
         else:
             # Default values if no state is saved
-            fit_name = self.fit_combobox.currentText()
-            fit_data = self.fit_manager.fits[fit_name]
+            fit_data = self.fit_manager.fits[self._selected_fit_name()]
             self.fit_literal_input.setText(fit_data["expression"])
             try:
                 self.update_parameter_table(fit_data["parameters"])
@@ -3554,12 +3980,18 @@ print(t)"""
             for row in range(1,self.parameter_table.rowCount()):
 
                 param_name = self.parameter_table.item(row, 0).text()
-                initial_guess = float(self.parameter_table.item(row, k*4+1).text())
+                try:
+                    initial_guess = float(self.parameter_table.item(row, k*4+1).text())
+                except (ValueError, AttributeError):
+                    initial_guess = 1.0
 
                 # Retrieve fitted value, handling empty cells gracefully
                 fitted_value_item = self.parameter_table.item(row, k*4+2)
                 if fitted_value_item and fitted_value_item.text():
-                    fitted_value = float(fitted_value_item.text())
+                    try:
+                        fitted_value = float(fitted_value_item.text())
+                    except ValueError:
+                        fitted_value = None
                 else:
                     fitted_value = None  # Default to None if no value is present
 
@@ -3571,7 +4003,7 @@ print(t)"""
                     "initial_guess": initial_guess,
                     "fitted_value": fitted_value,
                     "vary": vary,
-                    "std":fitted_value_item.toolTip()
+                    "std":(fitted_value_item.toolTip() if fitted_value_item else "") or None
                 }
             Parameters_dict[param_combi]=parameters
 
@@ -3609,8 +4041,9 @@ print(t)"""
                 row=row+1
                 self.parameter_table.setItem(row, 0, QTableWidgetItem(param))
                 self.parameter_table.setItem(row, 4*k+1, QTableWidgetItem(str(data["initial_guess"])))
-                item=QTableWidgetItem(str(data["fitted_value"] or ""))
-                item.setToolTip(str(data["std"] or ""))
+                # (a fitted value of exactly 0.0 used to be shown as empty because of "or")
+                item=QTableWidgetItem("" if data["fitted_value"] is None else str(data["fitted_value"]))
+                item.setToolTip("" if data["std"] is None else str(data["std"]))
                 self.parameter_table.setItem(row, 4*k+2, item)
                 checkbox = QCheckBox()
                 checkbox.setChecked(data["vary"])
@@ -3692,10 +4125,8 @@ print(t)"""
 
                 new_value = float(item.text())
                 self.update_initial_guess(param_name, new_value,combi)
-            #except ValueError:
-            #     print(f"Invalid initial guess for {param_name}")
-            except KeyError:
-                 pass
+            except (KeyError, ValueError, AttributeError):
+                 pass  # not a valid number yet, or the table is still being rebuilt
 
     def update_initial_guess(self, param_name, new_value,combi):
         selected_display_name = self.fit_combobox.currentText()
@@ -4008,7 +4439,7 @@ class ParameterTableApp(QMainWindow):
 
                 for hist_idx, controls in enumerate(self.histogram_controls):
                     if hist_idx in saved_values:
-                        controls[10].setValue(saved_values[hist_idx]["treat_as_CB"])
+                        controls[10].setCurrentText(saved_values[hist_idx]["treat_as_CB"])
                         controls[3].setValue(saved_values[hist_idx]["slider"])
                         controls[6].setCurrentText(saved_values[hist_idx]["combo_box"])
                         controls[4].setValue(saved_values[hist_idx]["num1_input"])
@@ -4098,7 +4529,7 @@ class ParameterTableApp(QMainWindow):
             if item.text():
                 col = item.column()
                 col_name = list(self.processor.measurement_parameters.keys())[col]
-                selected_values[col_name].append(datatypes[col_name].type(item.text()))
+                selected_values[col_name].append(convert_cell_text(datatypes[col_name], item.text()))
 
         for col in range(self.table_widget.columnCount()):
             col_name = list(self.processor.measurement_parameters.keys())[col]
@@ -4107,7 +4538,7 @@ class ParameterTableApp(QMainWindow):
                     item = self.table_widget.item(row, col)
                     if item and item.text():
                         item.setSelected(True)
-                        selected_values[col_name].append(datatypes[col_name].type(item.text()))
+                        selected_values[col_name].append(convert_cell_text(datatypes[col_name], item.text()))
 
         # Deselect empty cells immediately
         for item in self.table_widget.selectedItems():
@@ -4175,17 +4606,16 @@ class ParameterTableApp(QMainWindow):
 
             # Apply initial values to controls
             treat_as_CB.setCurrentText(initial_values.get(idx, {}).get("treat_as_CB", treatment))
-            slider.setValue(initial_values.get(idx, {}).get("slider", threshold))
+            slider.setValue(int(initial_values.get(idx, {}).get("slider", threshold)))
             combo_box.setCurrentText(initial_values.get(idx, {}).get("combo_box", rule))
-            num1_input.setValue(initial_values.get(idx, {}).get("num1_input", exclusion_zone))
-            num2_input.setValue(initial_values.get(idx, {}).get("num2_input", exclusion_zone))
+            num1_input.setValue(int(initial_values.get(idx, {}).get("num1_input", exclusion_zone)))
+            num2_input.setValue(int(initial_values.get(idx, {}).get("num2_input", exclusion_zone)))
 
             # Add histogram to the grid layout
             row, col = divmod(idx, grid_size)
             self.plot_layout.addWidget(widget, row, col)
 
-        # Force layout update
-        self.plot_area.setLayout(self.plot_layout)
+        # (the layout is already installed on plot_area in init_ui)
 
     def get_selected_combinations(self):
         """
@@ -4196,7 +4626,7 @@ class ParameterTableApp(QMainWindow):
         for col in range(self.table_widget.columnCount()):
             parameter = self.table_widget.horizontalHeaderItem(col).text()
             selected_values[col + 1] = [
-                self.processor.df._Datatypes[parameter].type(self.table_widget.item(row, col).text())
+                convert_cell_text(self.processor.df._Datatypes[parameter], self.table_widget.item(row, col).text())
                 for row in range(self.table_widget.rowCount())
                 if self.table_widget.item(row, col) and self.table_widget.item(row, col).isSelected()
             ]
@@ -4204,6 +4634,8 @@ class ParameterTableApp(QMainWindow):
         return self.compute_ordered_combinations(selected_values)
 
     def create_histogram_plot(self, data, idx, update_callback):
+        if len(data)==0:  # nothing selected: avoid max() / histogram of an empty list
+            data=[0]
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -4253,7 +4685,7 @@ class ParameterTableApp(QMainWindow):
 
         # Slider
         slider = QSlider(Qt.Horizontal)
-        slider.setRange(0, max(data))
+        slider.setRange(0, int(max(data)))
         slider.setValue(int(np.mean(data)))
         slider.valueChanged.connect(lambda value: update_callback(value, red_line, blue_line_1, blue_line_2, idx))
 
@@ -4450,28 +4882,39 @@ def apply_dark_theme(app):
     app.setStyle("Fusion")
 
 if __name__ == "__main__":
-    import ctypes
-    # Set Windows App User Model ID (Important for Taskbar Icon!)
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("pi3.postprocess.v1")
+    import sys
+    try:
+        import ctypes
+        # Set Windows App User Model ID (Important for Taskbar Icon!)
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("pi3.postprocess.v1")
+    except (ImportError, AttributeError, OSError):
+        pass  # not on Windows
 
-    app = QApplication([])
+    import builtins
+    # In an interactive console (python -i, IPython, Spyder) Qt's event loop already runs while the prompt
+    # waits, exactly like before: the window stays open and the console stays usable.
+    interactive = bool(sys.flags.interactive) or hasattr(sys, "ps1") or hasattr(builtins, "__IPYTHON__")
+    app = QApplication.instance()
+    owns_event_loop = (app is None) and not interactive
+    if app is None:
+        app = QApplication(sys.argv)
     #apply_dark_theme(app)
 
-    # Load the .bmp file into a QIcon
-    icon_path = "c:\src\postprocess\icons8-analyse-60.ico"
+    # Load the .ico file into a QIcon
+    icon_path = r"c:\src\postprocess\icons8-analyse-60.ico"
     icon = QIcon(icon_path)
 
     ## Set the application-wide taskbar icon
     app.setWindowIcon(icon)
-    
+
+    root=""
     if os.path.isfile("root_folder.txt"):
-        fi=open("root_folder.txt","r")
-        lines=fi.readlines()
-        fi.close()
-        root=lines[0]
-    else:
-        root=""
+        with open("root_folder.txt","r") as fi:
+            lines=fi.readlines()
+        if lines and os.path.isdir(lines[0].strip()):
+            root=lines[0].strip()
     window = FitApp(root)
     #window.setWindowIcon(icon)
     window.show()
-    app.exec_()
+    if owns_event_loop:
+        app.exec_()  # only for a plain "python Postprocess.py" - there is no event loop otherwise
