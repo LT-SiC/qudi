@@ -117,6 +117,9 @@ class NuclearOPs(DataGeneration):
         self._thread_lock = Mutex()
         self.performedRefocus = False
         self.mode=1
+        # defined from the start: reading .state / .thread before the first run must not raise
+        self.state = 'idle'
+        self.thread = None
 
         #self._confocal = self.confocal()
         #self._tt = self.transition_tracker()
@@ -304,21 +307,35 @@ class NuclearOPs(DataGeneration):
         return self.ana_trace.number_of_results
 
     def run(self, *args, **kwargs):
+        # Never start a second measurement thread on the same object.
+        if isinstance(getattr(self, 'thread', None), threading.Thread) and self.thread.is_alive():
+            raise RuntimeError('NuclearOPs: a measurement is still running on this object.')
         self._md = self.queue._awg.mcas_dict
-        if getattr(self, 'debug_mode', False):
-            #self.run_debug_sequence(*args, **kwargs)
+        # Set the state before the thread starts, so that anyone polling it (queue, GUI)
+        # sees 'run' immediately and not a stale 'idle'.
+        self.state = 'run'
+        target = self.run_debug_sequence if getattr(self, 'debug_mode', False) else self.run_measurement
+        self.thread = threading.Thread(target=self._thread_main, args=(target,) + tuple(args), kwargs=kwargs)
+        self.thread.start()
+        # Whats difference between envs/qudi/lib/threading and envs/qudi/lib/subprocess?
+        #self.run_measurement(*args, **kwargs)
 
-            self.thread = threading.Thread(target=self.run_debug_sequence,args = args, kwargs = kwargs)
-            self.thread.start()
-            
-
-
-
-        else:
-            self.thread = threading.Thread(target=self.run_measurement,args = args, kwargs = kwargs)
-            self.thread.start()
-            # Whats difference between envs/qudi/lib/threading and envs/qudi/lib/subprocess?
-            #self.run_measurement(*args, **kwargs)
+    def _thread_main(self, target, *args, **kwargs):
+        """Measurement thread: run target and make sure the state never stays at 'run'."""
+        try:
+            target(*args, **kwargs)
+        except Exception:
+            traceback.print_exc()
+            if getattr(self, '_state', None) == 'run':
+                # Failed before run_measurement's own finally (which sets 'idle') ran,
+                # e.g. in init_run(): behave like an error inside the measurement and stop the queue.
+                abort = args[0] if args else kwargs.get('abort')
+                if hasattr(abort, 'set'):
+                    abort.set()
+            # otherwise only the clean-up after a finished run failed: no need to stop the queue
+        finally:
+            if getattr(self, '_state', None) == 'run':
+                self.state = 'idle'
 
     #def mainloop():
 
@@ -1445,6 +1462,9 @@ class NuclearOPs(DataGeneration):
         Here only settings are changed that are not automatically changed during run()
         :return:
         """
+        if isinstance(getattr(self, 'thread', None), threading.Thread) and self.thread.is_alive():
+            # would wipe ret_mcas / mcas under a running measurement
+            raise RuntimeError('NuclearOPs: reset_settings() called while a measurement is running.')
         self.additional_recalibration_interval = 0
         self.ret_mcas = None
         self.mcas = None

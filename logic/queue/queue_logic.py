@@ -101,6 +101,7 @@ class ScriptTask:
         self.is_embedded = True
         self.original_path=original_path
         self.queued_path=queued_path
+        self.saved_dir = None  # data folder of this run, known once the measurement has started
 
     def __repr__(self):
         return "<ScriptTask id={} module={} status={}>".format(self.id, self.module_name, getattr(self.status, "value", self.status))
@@ -244,6 +245,10 @@ class queue_logic(GenericLogic):
         self._monitor_thread = None
         self._monitor_stop_event = threading.Event()
         self._last_script_history_len = 0
+        # set by abort_task() when only the running script should stop and the queue should go on
+        self._abort_current_only = False
+        # guards current_script / stop_request / script_queue between the queue thread and GUI calls
+        self._control_lock = threading.RLock()
 
     def on_activate(self):
 
@@ -456,39 +461,138 @@ class queue_logic(GenericLogic):
                 self.q.queue.clear()
                 self.script_queue.list = []
                 self.thread.stop_request.clear()
+            task = None
             try: ### runs the measurement!
-                self.current_script = self.q.get()
-                
-                self.thread.stop_request.clear() # this is necessary although it shouldn't be.
-                self.log.info("Starting Userscript {}...{}".format(
-                    self.current_script['module_name'][10:],
-                   self.thread.stop_request.is_set()))
-                sys.modules[self.current_script['module_name']].run_fun(
-                    self.thread.stop_request, queue = self, **self.current_script['pd']) ## Creates a nuclear and runs it.!!!
-                print('entering waiting loop in queue...')
-                if hasattr(self, 'cun'):
-                    task = self._task_by_module[self.current_script['module_name']]
-                    task.saved_dir=self.cun.save_dir
+                item = self.q.get()
+                with self._control_lock:
+                    self.current_script = item
+                    self.thread.stop_request.clear() # this is necessary although it shouldn't be.
+                    self._abort_current_only = False
+                module_name = self.current_script['module_name']
+                task = self._task_by_module.get(module_name)
 
-                    while self.cun.state == 'run':
-                        QtTest.QTest.qSleep(1000)  #This is Qt version for time.sleep to prevent freezinng.
-                    else:
-                        print("new measurement can be started")
-                else:
-                    pass
-                
-                print('entering waiting loop in queue... 2')
-                    
-                self.script_history.append(self.current_script)
-                self.script_queue.pop(0)
-                self.log.info("Userscript {} has finished...".format(self.current_script['module_name'][10:]))
-                del self.current_script
+                # A waiting script that was paused in the GUI holds the queue here
+                # until it is resumed ("Run") or aborted.
+                if task is not None and task.status == Status.PAUSED:
+                    self.log.info("Userscript {} is paused, queue waits until it is resumed or aborted.".format(module_name[10:]))
+                    while task.status == Status.PAUSED and not self.thread.stop_request.is_set():
+                        time.sleep(0.5)
+                if self.thread.stop_request.is_set() or (task is not None and task.status == Status.ABORTED):
+                    self._set_task_status(task, Status.ABORTED)
+                    with self._control_lock:
+                        self.script_queue.pop(0)
+                        del self.current_script
+                    self.q.task_done()
+                    continue
+
+                self._set_task_status(task, Status.RUNNING, start=True)
+                self.log.info("Starting Userscript {}...".format(module_name[10:]))
+
+                # Remember the start time the script's NuclearOPs had before this run, so that
+                # saved_dir is only taken from the new run (a re-queued script reuses its object).
+                nuclear = self._script_nuclear(module_name)
+                previous_start_time = getattr(nuclear, 'start_time', None)
+
+                sys.modules[module_name].run_fun(
+                    self.thread.stop_request, queue = self, **self.current_script['pd']) ## Creates a nuclear and runs it.!!!
+
+                # run_fun only starts the measurement thread and returns immediately.
+                # Block here until that thread has really finished, so the next script
+                # in the queue cannot start while this one is still measuring.
+                self._wait_for_script(module_name, task, previous_start_time)
+
+                with self._control_lock:
+                    aborted = self.thread.stop_request.is_set()
+                    if aborted and self._abort_current_only:
+                        # only this script was aborted from the GUI: keep the rest of the queue
+                        self.thread.stop_request.clear()
+                        self._abort_current_only = False
+                    self.script_history.append(self.current_script)
+                    self.script_queue.pop(0)
+                    del self.current_script
+                self._set_task_status(task, Status.ABORTED if aborted else Status.COMPLETED, end=True)
+                self.log.info("Userscript {} has finished{}.".format(module_name[10:], " (aborted)" if aborted else ""))
                 self.q.task_done()
             except Exception: #Not running the measurement.
-                self.q.queue.clear()
-                self.script_queue.list = []
                 exc_type, exc_value, exc_tb = sys.exc_info()
                 traceback.print_exception(exc_type, exc_value, exc_tb)
+                # If the script failed after its measurement thread was started, let that
+                # thread end first; otherwise a script added later could run in parallel.
+                try:
+                    current = self._current_module_name()
+                    if current is not None:
+                        self._wait_for_script(current)
+                except Exception:
+                    pass
+                self._set_task_status(task, Status.ERROR, end=True)
+                self.q.queue.clear()
+                self.script_queue.list = []
+                if hasattr(self, 'current_script'):
+                    del self.current_script
+
+    # ----------------------------
+    # Helpers for waiting on a queued script
+    # ----------------------------
+    @staticmethod
+    def _script_nuclear(module_name):
+        """Return the NuclearOPs object a queued user script created at module level, or None."""
+        module = sys.modules.get(module_name)
+        return getattr(module, 'nuclear', None)
+
+    @staticmethod
+    def _measurement_running(nuclear):
+        """True while the measurement started by nuclear.run() is still going."""
+        thread = getattr(nuclear, 'thread', None)
+        if isinstance(thread, threading.Thread):
+            return thread.is_alive()
+        # scripts that run synchronously have no thread; fall back to the state flag
+        return getattr(nuclear, '_state', 'idle') == 'run'
+
+    def _wait_for_script(self, module_name, task=None, previous_start_time=None, poll_s=0.5):
+        """Block the queue thread until the measurement of module_name has finished."""
+        nuclear = self._script_nuclear(module_name)
+        if nuclear is None:
+            return  # helper scripts without a NuclearOPs finish inside run_fun
+        while True:
+            self._remember_saved_dir(task, nuclear, previous_start_time)
+            if not self._measurement_running(nuclear):
+                break
+            time.sleep(poll_s)
+        self._remember_saved_dir(task, nuclear, previous_start_time)
+
+    @staticmethod
+    def _remember_saved_dir(task, nuclear, previous_start_time):
+        if task is None or task.saved_dir is not None:
+            return
+        start_time = getattr(nuclear, 'start_time', None)
+        if start_time is None or start_time is previous_start_time:
+            return  # this run has not initialised yet
+        try:
+            task.saved_dir = nuclear.save_dir
+        except Exception:
+            pass
+
+    def _set_task_status(self, task, status, start=False, end=False):
+        if task is None:
+            return
+        now = datetime.datetime.now()
+        if start:
+            task.start_time = now
+            task.end_time = None
+            task.accumulated_time = 0.0
+        if end:
+            task.end_time = now
+            if task.start_time:
+                task.accumulated_time = (now - task.start_time).total_seconds()
+        task.status = status
+        try:
+            self.signals.task_updated.emit(task)
+        except Exception:
+            pass
+
+    def _current_module_name(self):
+        current = getattr(self, 'current_script', None)
+        return current.get('module_name') if isinstance(current, dict) else None
 
     def run_thread(self):
         self.thread = threading.Thread(target=self.run)
@@ -505,8 +609,12 @@ class queue_logic(GenericLogic):
             return
         try:
             module_name = self.init_task(name, folder)
-            self.q.put({'module_name': module_name, 'pd': pd})
-            self.script_queue.append(ScriptQueueStep(module_name[10:], self.user_script_params))
+
+            # Order matters: script_queue entry, then ScriptTask, then q.put().
+            # An idle queue thread picks the item up immediately and must find its task and
+            # script_queue entry already registered; the monitor thread must never see a
+            # QUEUED task that is missing from script_queue.
+            self.script_queue.append(ScriptQueueStep(module_name[10:], pd))
 
             # ----------------------------
             # GUI adapter: create ScriptTask & emit task_added
@@ -514,12 +622,7 @@ class queue_logic(GenericLogic):
             try:
                 tid = uuid.uuid4().hex
                 task = ScriptTask(id=tid, module_name=module_name, pd=pd, queued_time=datetime.datetime.now(),original_path=folder,queued_path=name)
-                # try:
-                #     task.saved_dir=sys.modules[module_name].nuclear.save_dir
-                # except Exception as e:
-                #     print("error1: ",e)
-
-                task.start_time=datetime.datetime.now()
+                # start_time is set when the script actually starts running
                 self.tasks.append(task)
                 self._task_by_id[tid] = task
                 self._task_by_module[module_name] = task
@@ -534,6 +637,8 @@ class queue_logic(GenericLogic):
                         pass
             except Exception:
                 pass
+
+            self.q.put({'module_name': module_name, 'pd': pd})
 
         except Exception:
             print("Queuelogic: Could not add script to queue.")
@@ -672,9 +777,16 @@ class queue_logic(GenericLogic):
         #     self.get_user_script(name).evaluate(**pd)
 
     def remove_last_script(self):
-        if self.q.qsize() > 0:
+        # q.get() would remove the *first* waiting script while the display drops the last one;
+        # take the last waiting item instead.
+        with self._control_lock:
+            with self.q.mutex:
+                if len(self.q.queue) == 0:
+                    return
+                item = self.q.queue.pop()
             del self.script_queue[-1]
-            self.q.get()
+        task = self._task_by_module.get(item.get('module_name'))
+        self._set_task_status(task, Status.ABORTED)
 
     def create_odmr(self):
 
@@ -685,6 +797,12 @@ class queue_logic(GenericLogic):
         folder = self.user_script_folder if folder is None else folder
         funa = "{}/{}.py".format(folder, name)
         task_name = "__script__{}_{}".format(self.nowstr, name)
+        # The timestamp has 1 s resolution: adding the same script twice within a second
+        # would reuse the module (and its NuclearOPs object) of the first entry.
+        base_name, n = task_name, 2
+        while task_name in sys.modules:
+            task_name = "{}_{}".format(base_name, n)
+            n += 1
         _ = imp.load_source(task_name, funa)
         return task_name
 
@@ -734,53 +852,18 @@ class queue_logic(GenericLogic):
             poll_interval = 0.5
             while not self._monitor_stop_event.is_set():
                 try:
-                    # Mark running task if current_script exists
-                    if hasattr(self, 'current_script') and self.current_script:
-                        modname = self.current_script.get('module_name')
-                        task = self._task_by_module.get(modname)
-                        if task and task.status != Status.RUNNING:
-                            #task.status = Status.RUNNING
-                            #task.start_time = datetime.datetime.now()
-                            try:
-                                self.signals.task_updated.emit(task)
-                            except Exception:
-                                pass
-
-                    # If script_history has grown -> mark the last appended as COMPLETED
-                    hist_len = len(self.script_history) if hasattr(self, 'script_history') else 0
-                    if hist_len != self._last_script_history_len:
-                        # A change occurred: mark any newly finished tasks
-                        # iterate over new entries
-                        for idx in range(self._last_script_history_len, hist_len):
-                            try:
-                                item = self.script_history[idx]
-                                if isinstance(item, dict):
-                                    modname = item.get('module_name')
-                                else:
-                                    # fallback attempt
-                                    modname = getattr(item, 'module_name', None)
-                                if modname:
-                                    task = self._task_by_module.get(modname)
-                                    if task:
-                                        task.status = Status.COMPLETED
-                                        task.end_time = datetime.datetime.now()
-                                        if task.start_time:
-                                            task.accumulated_time = (task.end_time - task.start_time).total_seconds()
-                                        try:
-                                            self.signals.task_updated.emit(task)
-                                        except Exception:
-                                            pass
-                            except Exception:
-                                pass
-                        self._last_script_history_len = hist_len
+                    # Running / completed / aborted / error states are set by run() itself
+                    # (see _set_task_status); the monitor only catches entries that vanished
+                    # because the whole queue was cleared (stop request or script error).
 
                     # If queue cleared unexpectedly: mark queued tasks as ABORTED when queue empty but tasks remain
                     try:
                         qsize = self.q.qsize() if hasattr(self, 'q') else 0
                         if qsize == 0:
-                            # check for tasks still marked QUEUED
+                            current = self._current_module_name()
+                            # check for tasks still marked QUEUED / PAUSED that are not running
                             for task in list(self.tasks):
-                                if task.status == Status.QUEUED:
+                                if task.status in (Status.QUEUED, Status.PAUSED) and task.module_name != current:
                                     # if script_queue has no matching ScriptQueueStep, consider it removed
                                     has_in_script_queue = False
                                     try:
@@ -819,8 +902,13 @@ class queue_logic(GenericLogic):
 
 
     def Delete_measurement(self,tid):
-        #self.cun.save_dir
         tsk=self._find_task_by_id(tid)
+        if tsk is None or not tsk.saved_dir:
+            print("could not remove folder: this task has no data folder (yet)")
+            return
+        if tsk.module_name == self._current_module_name():
+            print("could not remove folder: the measurement is still running, abort it first")
+            return
         try:
             shutil.rmtree(tsk.saved_dir)
         except Exception as e:
@@ -835,46 +923,52 @@ class queue_logic(GenericLogic):
     def _find_task_by_module(self, module_name):
         return self._task_by_module.get(module_name)
 
+    def _is_measuring(self, task):
+        """True if task is the current script and its measurement has started."""
+        return task.module_name == self._current_module_name() and task.start_time is not None
+
+    def _remove_pending(self, task):
+        """Remove a waiting (not yet started) task from q and script_queue. Caller holds _control_lock."""
+        with self.q.mutex:
+            for it in list(self.q.queue):
+                if it.get('module_name') == task.module_name:
+                    self.q.queue.remove(it)
+        shortname = task.module_name[10:]
+        start = 1 if self._current_module_name() is not None else 0
+        for i in range(start, len(self.script_queue.list)):
+            if self.script_queue.list[i].name == shortname:
+                del self.script_queue[i]
+                break
+
     def pause_task(self, task_id):
         """
-        GUI requested pause: attempt to pause the running task if possible
-        or mark queued task as PAUSED.
-        This does not forcibly stop the underlying measurement unless it supports manual pause.
+        GUI "Pause".
+        Running script: sets manual_pause on its NuclearOPs; the measurement holds before its next point.
+        Waiting script: marked PAUSED; when the queue reaches it, the queue holds until "Run" or "Abort".
         """
         try:
             task = self._find_task_by_id(task_id)
             if not task:
                 return
-            if task.status == Status.RUNNING:
-                # if running and nuclear has manual_pause attribute, set it
-                try:
-                    if hasattr(self, 'cun') and hasattr(self.cun, 'manual_pause'):
-                        self.cun.manual_pause = True
-                        task.status = Status.PAUSED
-                        self.signals.task_updated.emit(task)
+            with self._control_lock:
+                if task.status == Status.RUNNING:
+                    nuclear = self._script_nuclear(task.module_name)
+                    if nuclear is None or not hasattr(nuclear, 'manual_pause'):
+                        print("Queue: this script has no NuclearOPs that can be paused.")
                         return
-                except Exception:
-                    pass
-                # otherwise simply mark paused (the measurement may not actually pause)
-                task.status = Status.PAUSED
-                try:
-                    self.signals.task_updated.emit(task)
-                except Exception:
-                    pass
-            elif task.status == Status.QUEUED:
-                task.status = Status.PAUSED
-                try:
-                    self.signals.task_updated.emit(task)
-                except Exception:
-                    pass
+                    nuclear.manual_pause = True
+                    self._set_task_status(task, Status.PAUSED)
+                elif task.status == Status.QUEUED:
+                    self._set_task_status(task, Status.PAUSED)
         except Exception:
             exc_type, exc_value, exc_tb = sys.exc_info()
             traceback.print_exception(exc_type, exc_value, exc_tb)
 
     def start_task(self, task_or_obj):
         """
-        GUI requested start: either resume a paused task, or force a queued task to the front of queue.
-        The GUI passes either a ScriptTask or a task id (str).
+        GUI "Run".
+        Paused running script: resume it. Paused waiting script: release it (it keeps its place).
+        Waiting script: move it to the front of the waiting scripts (runs after the current one).
         """
         try:
             if isinstance(task_or_obj, str):
@@ -883,125 +977,56 @@ class queue_logic(GenericLogic):
                 task = task_or_obj
             if not task:
                 return
-
-            if task.status == Status.PAUSED:
-                # resume: simply mark as queued and re-add to queue if necessary
-                task.status = Status.QUEUED
-                self.cun.manual_pause=False
-                try:
-                    self.signals.task_updated.emit(task)
-                except Exception:
-                    pass
-                # ensure module_name present in q; if absent, re-add it
-                present = False
-                try:
-                    for qitem in list(self.q.queue):
-                        if qitem.get('module_name') == task.module_name:
-                            present = True
+            with self._control_lock:
+                if task.status == Status.PAUSED:
+                    if self._is_measuring(task):
+                        nuclear = self._script_nuclear(task.module_name)
+                        if nuclear is not None:
+                            nuclear.manual_pause = False
+                        self._set_task_status(task, Status.RUNNING)
+                    else:
+                        self._set_task_status(task, Status.QUEUED)
+                elif task.status == Status.QUEUED and task.module_name != self._current_module_name():
+                    # move to front: reorder the waiting items in q and in script_queue the same way
+                    with self.q.mutex:
+                        items = [it for it in self.q.queue if it.get('module_name') == task.module_name]
+                        for it in items:
+                            self.q.queue.remove(it)
+                        self.q.queue.extendleft(reversed(items))
+                    shortname = task.module_name[10:]
+                    lst = self.script_queue.list
+                    start = 1 if self._current_module_name() is not None else 0
+                    for i in range(start, len(lst)):
+                        if lst[i].name == shortname:
+                            lst.insert(start, lst.pop(i))
                             break
-                except Exception:
-                    pass
-                if not present:
-                    # re-enqueue
-                    try:
-                        self.q.put({'module_name': task.module_name, 'pd': task.pd})
-                        # restore script_queue entry as original code expects it
-                        try:
-                            # the original script_queue stores the short name (module_name[10:])
-                            shortname = task.module_name[10:]
-                            self.script_queue.append(ScriptQueueStep(shortname, task.pd))
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-            elif task.status == Status.QUEUED:
-                # move to front by reconstructing queue: pop all, put the one first, then others
-                try:
-                    items = []
-                    try:
-                        while True:
-                            items.append(self.q.get_nowait())
-                    except Exception:
-                        pass
-                    # put selected task first then requeue others
-                    new_items = []
-                    found = False
-                    for it in items:
-                        if it.get('module_name') == task.module_name and not found:
-                            new_items.append(it)
-                            found = True
-                        else:
-                            new_items.append(it)
-                    # push back
-                    for it in new_items:
-                        self.q.put(it)
-                    # update status
-                    task.status = Status.QUEUED
-                    try:
-                        self.signals.task_updated.emit(task)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    self.script_queue_changed()
+                    self._set_task_status(task, Status.QUEUED)
         except Exception:
             exc_type, exc_value, exc_tb = sys.exc_info()
             traceback.print_exception(exc_type, exc_value, exc_tb)
 
     def abort_task(self, task_id):
         """
-        GUI requested abort: try to remove from queue or request stop if running.
-        This will attempt to remove queued entries and for running tasks set global stop request.
+        GUI "Abort" for one script.
+        Running script: stops that measurement; the queue then continues with the next script.
+        Waiting script: removed from the queue; the running measurement is not touched.
+        (set_stop_request() still stops the running script and clears the whole queue.)
         """
         try:
             task = self._find_task_by_id(task_id)
             if not task:
                 return
-
-            self.set_stop_request()
-
-            if task.status == Status.RUNNING:
-                # request stop of the current running thread (this stops all scripts)
-                try:
-                    self.set_stop_request()
-                except Exception:
-                    pass
-                task.status = Status.ABORTED
-                try:
-                    self.signals.task_updated.emit(task)
-                except Exception:
-                    pass
-            elif task.status in (Status.QUEUED, Status.PAUSED):
-                # remove matching entries from queue
-                try:
-                    items = []
-                    try:
-                        while True:
-                            items.append(self.q.get_nowait())
-                    except Exception:
-                        pass
-                    # requeue everything except the aborted task
-                    for it in items:
-                        if it.get('module_name') == task.module_name:
-                            # skip this entry (effectively abort)
-                            continue
-                        self.q.put(it)
-                    # remove any script_queue entries matching the short name
-                    try:
-                        shortname = task.module_name[10:]
-                        # find and remove first matching ScriptQueueStep
-                        for i, step in enumerate(list(self.script_queue.list)):
-                            if step.name == shortname:
-                                del self.script_queue.list[i]
-                                break
-                    except Exception:
-                        pass
-                    task.status = Status.ABORTED
-                    try:
-                        self.signals.task_updated.emit(task)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+            with self._control_lock:
+                if task.module_name == self._current_module_name():
+                    if self._is_measuring(task):
+                        self._abort_current_only = True
+                        self.thread.stop_request.set()
+                    # a held (paused, not started) current script is skipped by run()
+                    self._set_task_status(task, Status.ABORTED)
+                elif task.status in (Status.QUEUED, Status.PAUSED):
+                    self._remove_pending(task)
+                    self._set_task_status(task, Status.ABORTED)
         except Exception:
             exc_type, exc_value, exc_tb = sys.exc_info()
             traceback.print_exception(exc_type, exc_value, exc_tb)
