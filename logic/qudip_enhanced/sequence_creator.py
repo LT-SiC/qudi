@@ -879,7 +879,7 @@ class DD(Arbitrary):
         return self.tau_list - self.eff_pulse_dur_waiting_time
 
 class DDRF(Arbitrary):
-    def __init__(self, dd_type=None, pi_dur=None, pi2_dur=None, time_digitization=1 / 12e3, phase=0.0, rf_phase_increment=0.0, rotation_axis=0.0, detuning=None, bath_larmor = None, min_wait_dur = None, constant_phase_offset = False, rf_phase_offset=None,phase_dict={}, **kwargs):
+    def __init__(self, dd_type=None, pi_dur=None, pi2_dur=None, time_digitization=1 / 12e3, phase=0.0, rf_phase_increment=0.0, rotation_axis=0.0, detuning=None, bath_larmor = None, min_wait_dur = None, constant_phase_offset = False, rf_phase_offset=None,phase_dict={}, conditional = True, **kwargs):
         self.dd_type = dd_type
         self.rabi_period = pi_dur*2
         self.pi_dur = pi_dur
@@ -894,6 +894,7 @@ class DDRF(Arbitrary):
         self.constant_phase_offset = constant_phase_offset
         self.rf_phase_offset=rf_phase_offset if rf_phase_offset!=None else rf_phase_increment/2
         self.phase_dict=phase_dict
+        self.conditional = conditional
         self.set_total_tau(**kwargs)
     
     # TODO Implement second bath
@@ -1064,11 +1065,15 @@ class DDRF(Arbitrary):
             phi_tau = self.rf_phase_increment
         else:
             phi_tau = -self.detuning*(2*np.pi*tl[1]) + self.rf_phase_increment
-        for i, tau in enumerate(tl):
-             if i % 2 == 0:
-                 phase_rf.append(phi_tau* i + self.rotation_axis+self.rf_phase_offset)
-             else:
-                 phase_rf.append(phi_tau * i + np.pi + self.rotation_axis+self.rf_phase_offset)
+        if self.conditional:
+            for i, tau in enumerate(tl):
+                if i % 2 == 0:
+                    phase_rf.append(phi_tau * i + self.rotation_axis+self.rf_phase_offset)
+                else:
+                    phase_rf.append(phi_tau * i + np.pi + self.rotation_axis+self.rf_phase_offset)
+        else: 
+            for i, tau in enumerate(tl):
+                phase_rf.append(phi_tau* i + self.rotation_axis+self.rf_phase_offset)
 
         phase_rf[0]=self.rotation_axis
 

@@ -1254,7 +1254,7 @@ class NuclearOPs(DataGeneration):
     #             return True
 
     def reinit(self):
-        super(NuclearOPs, self).reinit()
+        super().reinit()
         self.odmr_count = 0
         self.additional_recalibration_interval_count = 0
         self.last_odmr = time.time()
@@ -1405,7 +1405,7 @@ class NuclearOPs(DataGeneration):
     def save(self):
         pass
         if len(self.iterator_df_done) > 0 and not(hasattr(self, 'do_save') and not self.do_save):
-            Thread1= threading.Thread(target= super(NuclearOPs, self).save, kwargs={"notify":False})
+            Thread1= threading.Thread(target=super().save, kwargs={"notify": False})
             Thread1.start()
             #super(NuclearOPs, self).save(notify=False) #### IMPORTANT
             Thread1.join()

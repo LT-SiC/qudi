@@ -13,6 +13,8 @@ from gui.queue.Queue import queue_gui
 
 from queue import Queue
 
+import zipfile
+
 from PyQt5.QtWidgets import QAbstractItemView, QMainWindow, QFileDialog
 from PyQt5 import QtGui
 from PyQt5.QtCore import pyqtSignal, QObject

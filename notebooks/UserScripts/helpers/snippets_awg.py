@@ -4579,6 +4579,7 @@ def ddrf(mcas,
          rf_phase_offset=0,
          measurements=[],
          phase_dict={},
+         conditional = True,
          ):
     pi2 = sc.Rabi(t_rabi=pi2_dur,
                   omega=1 / pi2_dur*4,
@@ -4600,6 +4601,7 @@ def ddrf(mcas,
                     constant_phase_offset = constant_phase_offset,
                     rf_phase_offset=rf_phase_offset,
                     phase_dict=phase_dict,
+                    conditional = True,
                     )
     sequence = []
     if pi2_1:

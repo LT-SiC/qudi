@@ -1262,6 +1262,12 @@ class DataProcessor:
                         df[name]=0.0#self.df[col]
                         if name not in added_observations:
                             added_observations.append(name)
+                # number of events behind the recalculated results: starts as the original events and is
+                # overwritten by the number of measurements that pass the "init" filter when recalculating
+                if "events" in df.columns and any(c.startswith("result_") for c in df.columns):
+                    df["recalculated_events"]=pa.to_numeric(df["events"],errors="coerce").astype(float)
+                    if "recalculated_events" not in added_observations:
+                        added_observations.append("recalculated_events")
                 for key in ["parameter_names","observation_names","dtypes"]:
                     setattr(df, f"_{key}", getattr(store.get_storer("df").attrs, key))
 
@@ -1423,23 +1429,35 @@ class DataProcessor:
 
 
 
-    @staticmethod
-    def _variance_of_mean(df, keys):
-        """Variance of the plotted (averaged) value for every group of `keys`.
-        Every row i has the error sigma_i = 1/sqrt(events_i); the plain mean of n independent rows has the
-        variance sum(sigma_i^2)/n^2. Returns a dataframe with the `keys` and a column "var" (same order as the
-        groupby(...).agg("mean") used for the data) or None if there is no usable "events" column."""
-        if "events" not in df.columns or "events" in keys:
+    def _variance_of_mean(self, df, keys):
+        """Variance of the plotted (averaged) value for every group of `keys`, for two error models.
+        N_i is the number of events behind row i ("events", or "recalculated_events" if a recalculated result is
+        plotted). The plotted value is the plain mean of the n rows of a group, so
+            shot noise : sigma_i^2 = 1/N_i                -> var(mean) = sum(1/N_i) / n^2
+            binomial   : sigma_i^2 = P0(1-P0)/N_i         -> var(mean) = P0(1-P0) * sum(1/N_i) / n^2
+        with P0 = the plotted value of the group (the result is a probability).
+        Returns a dataframe with the `keys` and the columns "var_shot", "var_binomial" (same order as the
+        groupby(...).agg("mean") used for the data), or None if the errors are not defined for this plot."""
+        y_col = self.y_axis_param
+        n_col = "recalculated_events" if str(y_col).startswith("recalculated_") else "events"
+        if n_col not in df.columns or y_col not in df.columns:
             return None
-        events = pa.to_numeric(df["events"], errors="coerce").to_numpy(dtype=float)
+        if y_col in ("events", "recalculated_events") or n_col in keys or y_col in keys:
+            return None
+        events = pa.to_numeric(df[n_col], errors="coerce").to_numpy(dtype=float)
         valid = events > 0
         inv = np.full(len(events), np.nan)
-        inv[valid] = 1.0 / events[valid]          # sigma_i^2 ; events <= 0 has no defined error -> nan
+        inv[valid] = 1.0 / events[valid]          # 1/N_i ; N_i <= 0 has no defined error -> nan
         tmp = df[list(keys)].copy()
         tmp["_inv"] = inv
+        tmp["_y"] = pa.to_numeric(df[y_col], errors="coerce").to_numpy(dtype=float)
         g = tmp.groupby(list(keys), as_index=False).agg(inv_sum=("_inv", lambda s: s.sum(skipna=False)),
-                                                        n=("_inv", "size"))
-        g["var"] = g["inv_sum"] / g["n"] ** 2
+                                                        n=("_inv", "size"),
+                                                        p0=("_y", "mean"))
+        g["var_shot"] = g["inv_sum"] / g["n"] ** 2
+        p0 = g["p0"].to_numpy(dtype=float)
+        p0 = np.where((p0 >= 0) & (p0 <= 1), p0, np.nan)  # P0(1-P0) only makes sense for a probability
+        g["var_binomial"] = p0 * (1 - p0) * g["inv_sum"] / g["n"] ** 2
         return g
 
     def extract_data(self):
@@ -1456,7 +1474,7 @@ class DataProcessor:
         self.label_to_combi = {}
         self.combi_to_label = {}
         self.data = {}
-        self.errors = {}  # combination -> array of error bars (1d plots only), or None if not available
+        self.errors = {}  # combination -> {"shot": array, "binomial": array} of error bars (1d plots only), or None
 
         flag=False
 
@@ -1518,7 +1536,8 @@ class DataProcessor:
                     try:
                         g = self._variance_of_mean(filtered_df, [self.x_axis_param])
                         if g is not None:
-                            err = np.sqrt(g["var"].to_numpy(dtype=float))
+                            err = {"shot": np.sqrt(g["var_shot"].to_numpy(dtype=float)),
+                                   "binomial": np.sqrt(g["var_binomial"].to_numpy(dtype=float))}
                     except Exception as e:
                         print("could not compute the error bars:", e)
                 else:
@@ -1542,15 +1561,17 @@ class DataProcessor:
                         g = self._variance_of_mean(filtered_df, [self.x_axis_param, difference_param])
                         if g is not None:
                             u = prepared_df[difference_param].unique()
-                            v1 = g.loc[g[difference_param]==u[0]]["var"].to_numpy(dtype=float)
-                            v2 = g.loc[g[difference_param]==u[1]]["var"].to_numpy(dtype=float)
-                            n = min(len(v1), len(v2))
-                            err = np.sqrt(v1[:n] + v2[:n])
+                            err = {}
+                            for mode in ("shot", "binomial"):
+                                v1 = g.loc[g[difference_param]==u[0]][f"var_{mode}"].to_numpy(dtype=float)
+                                v2 = g.loc[g[difference_param]==u[1]][f"var_{mode}"].to_numpy(dtype=float)
+                                n = min(len(v1), len(v2))
+                                err[mode] = np.sqrt(v1[:n] + v2[:n])
                     except Exception as e:
                         print("could not compute the error bars:", e)
 
                 self.data[combination] = (x, y, [])
-                self.errors[combination] = err if (err is not None and len(err)==len(y)) else None
+                self.errors[combination] = err if (err is not None and all(len(v)==len(y) for v in err.values())) else None
 
             else: #2d plot
                 self.two_d=True
@@ -1643,6 +1664,10 @@ class DataProcessor:
                 msk=eval(f'ssr {rule}= ({thresholds[i]["slider"]} {["+","-"][rule=="<"]} {thresholds[i][num_index]})')
                 msks.append(msk)
                 init_mask=init_mask & msk
+
+        if "recalculated_events" in self.df.columns:
+            # the init filter may remove measurements -> the events behind the recalculated results change
+            self.df.at[list(filtered_df.index)[0],"recalculated_events"]=float(np.sum(init_mask))
 
         counter=0
         i_ssrs=[] #initialized ssrs
@@ -1969,6 +1994,7 @@ class FitApp(QMainWindow):
         self.previous_tab_index = 0
         self.current_tab_name = None
         self.errorbars_enabled = {}  # tab name -> plot error bars (default True)
+        self.error_modes = {}  # tab name -> "shot" (1/sqrt(N)) or "binomial" (sqrt(P0(1-P0)/N))
         self.plot_styles = {}  # tab name -> "line", "bar" (side by side) or "bar_overlay" (same x space, transparent)
         self.current_literal = ""
         self.colorbars={}
@@ -2134,7 +2160,7 @@ class FitApp(QMainWindow):
         name = self.tab_widget.tabText(index)
         for dictionary in [self.data_processors,self.tabs_with_plot,self.paramx,self.paramy,self.plot_layouts,self.indexes,self.highliners,self.Tables,self.average_over_list_widgets,
                            self.z_axis_list_widgets,self.x_axis_list_widgets,self.y_axis_list_widgets,self.apply_code_checkboxes,self.code_inputs,self.stacked_widgets,
-                           self.tab_states,self.setters,self.errorbars_enabled,self.plot_styles]:
+                           self.tab_states,self.setters,self.errorbars_enabled,self.plot_styles,self.error_modes]:
 
             if name in dictionary.keys():
                 del dictionary[name]
@@ -3202,12 +3228,20 @@ class FitApp(QMainWindow):
         container_up_layout.addWidget(apply_code_checkbox)
 
         errorbar_checkbox = QCheckBox("errorbars")
-        errorbar_checkbox.setToolTip("Error bars of the 1d data: 1/sqrt(events) per row, error of the mean when averaging\n"
+        errorbar_checkbox.setToolTip("Error bars of the 1d data, with the proper error of the mean when averaging rows.\n"
+                                     "N = events (recalculated_events when a recalculated result is plotted).\n"
                                      "(not shown in FFT mode)")
         self.errorbars_enabled[name] = True
         errorbar_checkbox.setChecked(True)
         errorbar_checkbox.toggled.connect(lambda checked, tab_name=name: self.toggle_errorbars(tab_name, checked))
         container_up_layout.addWidget(errorbar_checkbox)
+
+        error_type_combobox = QComboBox()
+        error_type_combobox.addItems(["shot noise 1/sqrt(N)", "binomial sqrt(P0(1-P0)/N)"])
+        error_type_combobox.setToolTip("shot noise: 1/sqrt(N)\nbinomial: sqrt(P0(1-P0)/N), P0 = the plotted value (a probability)")
+        self.error_modes[name] = "shot"
+        error_type_combobox.currentTextChanged.connect(lambda text, tab_name=name: self.change_error_mode(tab_name, text))
+        container_up_layout.addWidget(error_type_combobox)
 
         plot_style_combobox = QComboBox()
         plot_style_combobox.addItems(["line plot", "bar plot (side by side)", "bar plot (overlay, transparent)"])
@@ -3584,6 +3618,10 @@ print(t)"""
             self.plot_styles[tab_name] = "line"
         self.replot_tab_keeping_fits(tab_name)
 
+    def change_error_mode(self, tab_name, text):
+        self.error_modes[tab_name] = "binomial" if text.startswith("binomial") else "shot"
+        self.replot_tab_keeping_fits(tab_name)
+
     def toggle_errorbars(self, tab_name, checked):
         """Switch the error bars of one tab on/off and redraw it (keeping the fits that were already made)."""
         self.errorbars_enabled[tab_name] = bool(checked)
@@ -3729,7 +3767,8 @@ print(t)"""
 
                 label=" ".join(L)
 
-                errors = getattr(processor, "errors", {}).get(combination)
+                error_sets = getattr(processor, "errors", {}).get(combination)
+                errors = error_sets.get(self.error_modes.get(tab_name, "shot")) if error_sets else None
                 use_errorbars = (self.errorbars_enabled.get(tab_name, True) and errors is not None
                                  and not processor.fft_mode  # the errors belong to the time-domain data
                                  and len(errors) == len(np.atleast_1d(y_data)) == len(np.atleast_1d(x_data)))
